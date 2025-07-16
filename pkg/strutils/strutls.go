@@ -28,6 +28,11 @@ func UTF8FromBPFBytes(b []byte) string {
 }
 
 func ParseSize(str string) (int, error) {
+	// Handle empty string case by returning 0 (default value)
+	if len(str) == 0 {
+		return 0, nil
+	}
+
 	suffix := str[len(str)-1:]
 
 	if !strings.Contains("KMG", suffix) {

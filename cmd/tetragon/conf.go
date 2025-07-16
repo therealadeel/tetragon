@@ -4,6 +4,8 @@
 package main
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/cilium/tetragon/pkg/logger"
@@ -21,6 +23,64 @@ var (
 		"/usr/local/lib/tetragon/tetragon.conf.d/",
 	}
 )
+
+// reloadConfig reloads the configuration from files and environment variables
+func reloadConfig() error {
+	// Preserve critical configuration values that might have been set via command line flags
+	// These are essential for proper BPF program loading and kernel interface access
+	procFS := viper.GetString(option.KeyProcFS)
+	if procFS == "" {
+		procFS = "/proc"
+	}
+
+	bpfDir := viper.GetString(option.KeyBpfDir)
+	hubbleLib := viper.GetString(option.KeyHubbleLib)
+	btf := viper.GetString(option.KeyBTF)
+
+	// Clear existing config
+	viper.Reset()
+
+	// Restore critical defaults that are needed for BPF program loading
+	viper.SetDefault(option.KeyProcFS, procFS)
+	if bpfDir != "" {
+		viper.SetDefault(option.KeyBpfDir, bpfDir)
+	}
+	if hubbleLib != "" {
+		viper.SetDefault(option.KeyHubbleLib, hubbleLib)
+	}
+	if btf != "" {
+		viper.SetDefault(option.KeyBTF, btf)
+	}
+
+	log.Info("Preserved critical configuration values during reload", "procFS", procFS, "bpfDir", bpfDir, "hubbleLib", hubbleLib, "btf", btf)
+
+	// Reload configuration with the same logic as startup
+	readConfigSettings(adminTgConfDir, adminTgConfDropIn, packageTgConfDropIns)
+
+	// Validate critical configuration options
+	if err := validateConfig(); err != nil {
+		return fmt.Errorf("configuration validation failed: %w", err)
+	}
+
+	log.Info("Configuration reloaded and validated successfully")
+	return nil
+}
+
+// validateConfig performs basic validation of critical configuration
+func validateConfig() error {
+	// Validate tracing policy directory - this may not be set when not properly configured but should exist if we reloading configs
+	if viper.IsSet(option.KeyTracingPolicyDir) {
+		if !filepath.IsAbs(viper.GetString(option.KeyTracingPolicyDir)) {
+			return fmt.Errorf("tracing policy directory must be absolute path")
+		}
+	}
+
+	if viper.IsSet(option.KeyRBSize) && viper.IsSet(option.KeyRBSizeTotal) {
+		return fmt.Errorf("cannot specify both --rb-size and --rb-size-total")
+	}
+
+	return nil
+}
 
 func readConfigSettings(defaultConfDir string, defaultConfDropIn string, dropInsDir []string) {
 	viper.SetEnvPrefix("tetragon")

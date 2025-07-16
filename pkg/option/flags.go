@@ -6,7 +6,6 @@ package option
 import (
 	"errors"
 	"fmt"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,7 +15,6 @@ import (
 	"github.com/cilium/tetragon/pkg/logger"
 	"github.com/cilium/tetragon/pkg/logger/logfields"
 	"github.com/cilium/tetragon/pkg/strutils"
-	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
@@ -185,9 +183,17 @@ func ReadAndSetFlags() error {
 	if Config.RBQueueSize, err = strutils.ParseSize(viper.GetString(KeyRBQueueSize)); err != nil {
 		return fmt.Errorf("failed to parse rb-queue-size value: %w", err)
 	}
-	if err = viper.UnmarshalKey(KeyEnableAncestors, &enableAncestors, viper.DecodeHook(stringToSliceHookFunc(","))); err != nil {
-		return fmt.Errorf("failed to parse enable-ancestors value: %w", err)
+
+	// Get the enable-ancestors flag as a string slice
+	enableAncestors = viper.GetStringSlice(KeyEnableAncestors)
+	// Filter out empty strings
+	filteredAncestors := []string{}
+	for _, ancestor := range enableAncestors {
+		if strings.TrimSpace(ancestor) != "" {
+			filteredAncestors = append(filteredAncestors, strings.TrimSpace(ancestor))
+		}
 	}
+	enableAncestors = filteredAncestors
 
 	if slices.Contains(enableAncestors, "base") {
 		Config.EnableProcessAncestors = true
@@ -213,10 +219,15 @@ func ReadAndSetFlags() error {
 
 	Config.ProcessCacheSize = viper.GetInt(KeyProcessCacheSize)
 	Config.DataCacheSize = viper.GetInt(KeyDataCacheSize)
-	Config.ProcessCacheGCInterval = viper.GetDuration(KeyProcessCacheGCInterval)
 
-	if Config.ProcessCacheGCInterval <= 0 {
-		return errors.New("failed to parse process-cache-gc-interval value. Must be >= 0")
+	// Handle ProcessCacheGCInterval with proper default fallback
+	if viper.IsSet(KeyProcessCacheGCInterval) {
+		Config.ProcessCacheGCInterval = viper.GetDuration(KeyProcessCacheGCInterval)
+		if Config.ProcessCacheGCInterval <= 0 {
+			return errors.New("failed to parse process-cache-gc-interval value. Must be > 0")
+		}
+	} else {
+		Config.ProcessCacheGCInterval = defaults.DefaultProcessCacheGCInterval
 	}
 
 	Config.MetricsServer = viper.GetString(KeyMetricsServer)
@@ -225,14 +236,28 @@ func ReadAndSetFlags() error {
 
 	Config.ExportFilename = viper.GetString(KeyExportFilename)
 	Config.ExportFileMaxSizeMB = viper.GetInt(KeyExportFileMaxSizeMB)
-	Config.ExportFileRotationInterval = viper.GetDuration(KeyExportFileRotationInterval)
+
+	// Handle ExportFileRotationInterval with proper default fallback
+	if viper.IsSet(KeyExportFileRotationInterval) {
+		Config.ExportFileRotationInterval = viper.GetDuration(KeyExportFileRotationInterval)
+	} else {
+		Config.ExportFileRotationInterval = 0 // Default from flag definition
+	}
+
 	Config.ExportFileMaxBackups = viper.GetInt(KeyExportFileMaxBackups)
 	Config.ExportFileCompress = viper.GetBool(KeyExportFileCompress)
 	Config.ExportRateLimit = viper.GetInt(KeyExportRateLimit)
 	Config.ExportFilePerm = viper.GetString(KeyExportFilePerm)
 
 	Config.EnableExportAggregation = viper.GetBool(KeyEnableExportAggregation)
-	Config.ExportAggregationWindowSize = viper.GetDuration(KeyExportAggregationWindowSize)
+
+	// Handle ExportAggregationWindowSize with proper default fallback
+	if viper.IsSet(KeyExportAggregationWindowSize) {
+		Config.ExportAggregationWindowSize = viper.GetDuration(KeyExportAggregationWindowSize)
+	} else {
+		Config.ExportAggregationWindowSize = 15 * time.Second // Default from flag definition
+	}
+
 	Config.ExportAggregationBufferSize = viper.GetUint64(KeyExportAggregationBufferSize)
 
 	Config.CpuProfile = viper.GetString(KeyCpuProfile)
@@ -260,7 +285,7 @@ func ReadAndSetFlags() error {
 	switch o := viper.GetString(KeyUsernameMetadata); o {
 	case "unix":
 		Config.UsernameMetadata = int(USERNAME_METADATA_UNIX)
-	case "disabled":
+	case "disabled", "": // Handle empty string by defaulting to disabled
 		Config.UsernameMetadata = int(USERNAME_METADATA_DISABLED)
 	default:
 		return fmt.Errorf("unknown option for %s: %q", KeyUsernameMetadata, o)
@@ -339,23 +364,6 @@ func ParseCgroupRate(rate string) CgroupRate {
 	return CgroupRate{
 		Events:   uint64(events),
 		Interval: uint64(interval),
-	}
-}
-
-// StringToSliceHookFunc returns a DecodeHookFunc that converts string to []string
-// by splitting on the given sep and removing all leading and trailing white spaces.
-func stringToSliceHookFunc(sep string) mapstructure.DecodeHookFunc {
-	return func(f reflect.Type, t reflect.Type, data interface{}) (interface{}, error) {
-		if f.Kind() != reflect.String || t != reflect.SliceOf(f) {
-			return data, nil
-		}
-
-		outSlice := []string{}
-		for _, s := range strings.Split(data.(string), sep) {
-			s = strings.TrimSpace(s)
-			outSlice = append(outSlice, s)
-		}
-		return outSlice, nil
 	}
 }
 

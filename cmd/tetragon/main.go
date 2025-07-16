@@ -207,7 +207,9 @@ func tetragonExecute() error {
 
 func tetragonExecuteCtx(ctx context.Context, cancel context.CancelFunc, ready func()) error {
 	sigs := make(chan os.Signal, 1)
+	reloadSigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(reloadSigs, syscall.SIGHUP)
 
 	// Logging should always be bootstrapped first. Do not add any code above this!
 	if err := logger.SetupLogging(option.Config.LogOpts, option.Config.Debug); err != nil {
@@ -361,12 +363,69 @@ func tetragonExecuteCtx(ctx context.Context, cancel context.CancelFunc, ready fu
 		obs.PrintStats()
 	}()
 
+	// Handle shutdown signals
 	go func() {
 		s := <-sigs
 		// if we receive a signal, call cancel so that contexts are finalized, which will
 		// leads to normally return from tetragonExecute().
 		log.Info(fmt.Sprintf("Received signal %s, shutting down...", s))
 		cancel()
+	}()
+
+	// Handle reload signals
+	go func() {
+		for {
+			select {
+			case <-reloadSigs:
+				log.Info("Received SIGHUP, reloading configuration...")
+
+				// Perform configuration reload with proper error handling
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Error("Panic during configuration reload", "panic", r)
+						}
+					}()
+
+					if err := reloadConfig(); err != nil {
+						log.Error("Failed to reload configuration", logfields.Error, err)
+						return
+					}
+
+					// Update the global config after successful reload
+					if err := option.ReadAndSetFlags(); err != nil {
+						log.Error("Failed to update configuration", logfields.Error, err)
+						return
+					}
+
+					// Update BPF directory to match startup behavior (but don't call SetMapPrefix again)
+					observerDir := getObserverDir()
+					option.Config.BpfDir = observerDir
+
+					log.Info("BPF configuration updated during reload", "bpfDir", option.Config.BpfDir, "hubbleLib", option.Config.HubbleLib)
+
+					// Validate and clean up configuration paths after reload
+					if option.Config.TracingPolicyDir != "" && !filepath.IsAbs(option.Config.TracingPolicyDir) {
+						log.Error("Failed to reload configuration", logfields.Error, fmt.Errorf("path specified by --tracing-policy-dir '%q' is not absolute", option.Config.TracingPolicyDir))
+						return
+					}
+					if option.Config.TracingPolicyDir != "" {
+						option.Config.TracingPolicyDir = filepath.Clean(option.Config.TracingPolicyDir)
+					}
+
+					// Reload tracing policies
+					if err := reloadTracingPolicies(ctx); err != nil {
+						log.Error("Failed to reload tracing policies", logfields.Error, err)
+						return
+					}
+
+					log.Info("Configuration and tracing policies reloaded successfully")
+				}()
+
+			case <-ctx.Done():
+				return
+			}
+		}
 	}()
 
 	if err := obs.InitSensorManager(); err != nil {
@@ -584,6 +643,56 @@ func loadTpFromDir(ctx context.Context, dir string) error {
 	})
 
 	return err
+}
+
+func reloadTracingPolicies(ctx context.Context) error {
+	sensorManager := observer.GetSensorManager()
+
+	// List current tracing policies
+	currentPolicies, err := sensorManager.ListTracingPolicies(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list current tracing policies: %w", err)
+	}
+
+	// Remove all existing tracing policies
+	for _, policy := range currentPolicies.Policies {
+		if err := sensorManager.DeleteTracingPolicy(ctx, policy.Name, policy.Namespace); err != nil {
+			log.Warn("Failed to remove existing tracing policy", "name", policy.Name, "namespace", policy.Namespace, logfields.Error, err)
+		} else {
+			log.Info("Removed existing tracing policy", "name", policy.Name, "namespace", policy.Namespace)
+		}
+	}
+
+	// Use default directory if TracingPolicyDir is empty
+	tracingPolicyDir := option.Config.TracingPolicyDir
+	if tracingPolicyDir == "" {
+		tracingPolicyDir = defaults.DefaultTpDir
+	}
+
+	// Load tracing policies from directory (handle case when directory doesn't exist)
+	if _, err := os.Stat(tracingPolicyDir); err != nil {
+		if os.IsNotExist(err) && tracingPolicyDir == defaults.DefaultTpDir {
+			log.Info("Loading Tracing Policies from directory ignored during reload, directory does not exist", "tracing-policy-dir", tracingPolicyDir)
+		} else if os.IsNotExist(err) {
+			log.Warn("Tracing policy directory does not exist during reload", "tracing-policy-dir", tracingPolicyDir)
+		} else {
+			return fmt.Errorf("failed to access tracing policies dir %s: %w", tracingPolicyDir, err)
+		}
+	} else {
+		// Directory exists, load policies from it
+		if err := loadTpFromDir(ctx, tracingPolicyDir); err != nil {
+			return fmt.Errorf("failed to reload tracing policies from directory: %w", err)
+		}
+	}
+
+	// Load tracing policy from file if specified
+	if len(option.Config.TracingPolicy) > 0 {
+		if err := addTracingPolicy(ctx, option.Config.TracingPolicy); err != nil {
+			return fmt.Errorf("failed to reload tracing policy file: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func addTracingPolicy(ctx context.Context, file string) error {
