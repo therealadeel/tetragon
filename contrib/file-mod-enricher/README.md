@@ -14,7 +14,7 @@ This tool demonstrates user-space post-processing of Tetragon events to add file
 ## Prerequisites
 
 - Tetragon running with gRPC server enabled
-- Apply the enhanced tracing policy: `passwd_write_with_close.yaml`
+- Apply the enhanced tracing policy: `example-tracingpolicy.yaml`
 
 ## Configuration
 
@@ -53,7 +53,7 @@ tracker:
 
 1. **Apply the tracing policy:**
    ```bash
-   kubectl apply -f passwd_write_with_close.yaml
+   kubectl apply -f example-tracingpolicy.yaml
    ```
 
 2. **Build and run the enricher:**
