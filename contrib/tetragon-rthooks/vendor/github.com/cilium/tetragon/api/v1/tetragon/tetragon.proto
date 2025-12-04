@@ -186,6 +186,12 @@ message UserRecord {
   string name = 1;
 }
 
+// Environment variable
+message EnvVar {
+  string Key = 1;
+  string Value = 2;
+}
+
 message Process {
   // Exec ID uniquely identifies the process over time across all the nodes in the cluster.
   string exec_id = 1;
@@ -297,6 +303,8 @@ message Process {
   // for example, you wish to discern whether a process was spawned using a
   // tool like nsenter or kubectl exec.
   google.protobuf.BoolValue in_init_tree = 20;
+  // Environment variables passed to the binary at execution.
+  repeated EnvVar environment_variables = 21;
 }
 
 message ProcessExec {
@@ -712,9 +720,16 @@ message GetHealthStatusResponse {
 
 // loader sensor event triggered for loaded binary/library
 message ProcessLoader {
+  // Process that triggered the loader.
   Process process = 1;
+  // File path that is being loaded.
   string path = 2;
+  // Buildid of the file that is being loaded.
   bytes buildid = 3;
+  // Immediate parent of the process.
+  Process parent = 4;
+  // Ancestors of the process beyond the immediate parent.
+  repeated Process ancestors = 5;
 }
 
 // RuntimeHookRequest synchronously propagates information to the agent about run-time state.
