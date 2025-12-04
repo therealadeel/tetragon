@@ -1,0 +1,24 @@
+# Example configuration for monitoring security-critical files
+target_files:
+  - "/etc/passwd"
+  - "/etc/shadow"
+  - "/etc/group"
+  - "/etc/sudoers"
+  - "/etc/hosts"
+  - "/etc/ssh/sshd_config"
+  - "/etc/ssh/ssh_config" 
+  - "/etc/crontab"
+  - "/etc/systemd/system"
+  - "/etc/apache2/apache2.conf"
+
+tetragon:
+  server_address: "localhost:54321"
+
+output:
+  format: "json"
+  indent: true
+  include_metrics: true
+
+tracker:
+  cleanup_timeout: "10m"
+  stats_interval: "2m"

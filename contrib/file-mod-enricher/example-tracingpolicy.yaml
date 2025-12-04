@@ -1,0 +1,68 @@
+# Enhanced policy to track /etc/passwd write lifecycle
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "passwd-write-lifecycle"
+spec:
+  kprobes:
+  # Track file open for /etc/passwd with write permissions
+  - call: "sys_openat"
+    return: true
+    syscall: true
+    message: "Opening /etc/passwd for write"
+    args:
+    - index: 0
+      type: int
+    - index: 1
+      type: "string"
+    - index: 2
+      type: "int"
+    returnArg:
+      index: 0
+      type: int
+    selectors:
+    - matchArgs:
+      - index: 1
+        operator: "Equal"
+        values:
+        - "/etc/passwd"
+        - "/etc/shadow" 
+        - "/etc/group"
+        - "/etc/sudoers"
+        - "/etc/hosts"
+        - "/etc/ssh/sshd_config"
+        - "/etc/crontab"
+      - index: 2
+        operator: "Mask"
+        values:
+        - "64" # CREATE (0x40)
+        - "1"  # WRONLY (0x01)
+        - "2"  # RDWR (0x02)
+      matchReturnArgs:
+      - index: 0
+        operator: "GT"
+        values:
+        - "0"
+  
+  # Track file close for any file descriptor
+  - call: "sys_close"
+    return: true
+    syscall: true
+    message: "Closing file descriptor"
+    args:
+    - index: 0
+      type: int
+    returnArg:
+      index: 0
+      type: int
+    selectors:
+    - matchArgs:
+      - index: 0
+        operator: "GT"
+        values:
+        - "0"
+      matchReturnArgs:
+      - index: 0
+        operator: "Equal"
+        values:
+        - "0"  # successful close

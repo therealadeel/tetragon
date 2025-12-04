@@ -1,0 +1,33 @@
+# File Modification Enricher Configuration
+# This configuration defines which files to monitor for modifications
+
+# Files to monitor for write operations
+target_files:
+  - "/etc/passwd"
+  - "/etc/shadow" 
+  - "/etc/group"
+  - "/etc/sudoers"
+  - "/etc/hosts"
+  - "/etc/ssh/sshd_config"
+  - "/etc/crontab"
+
+# Optional: Tetragon server configuration
+tetragon:
+  # gRPC server address (can be overridden by TETRAGON_SERVER env var)
+  server_address: "localhost:54321"
+
+# Optional: Output configuration  
+output:
+  # Output format: "json" (default)
+  format: "json"
+  # JSON indentation
+  indent: true
+  # Include metrics in output
+  include_metrics: false
+
+# Optional: Tracker configuration
+tracker:
+  # Timeout for cleaning up stale file descriptors
+  cleanup_timeout: "5m"
+  # Interval for printing stats
+  stats_interval: "1m"
