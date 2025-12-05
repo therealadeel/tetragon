@@ -114,6 +114,7 @@ The enricher outputs JSON events with an additional `file_hash` field:
       "inode": 12345
     }
   },
+  "changed": true,
   "time": "2025-12-03T10:30:45.123456789Z"
 }
 ```
