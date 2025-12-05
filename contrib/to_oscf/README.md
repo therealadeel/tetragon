@@ -73,16 +73,6 @@ OCSF_OUTPUT_FILE=/var/log/tetragon-ocsf.json ./to_oscf
 TETRAGON_EXPORT_DIR=/var/log ./to_oscf
 ```
 
-### Docker Usage
-
-```bash
-# Run in Docker with volume mount
-docker run --rm -v /tmp:/output \
-  -e TETRAGON_EXPORT_DIR=/output \
-  -e TETRAGON_SERVER=host.docker.internal:54321 \
-  tetragon-to-ocsf:latest
-```
-
 ## Configuration
 
 The converter uses a YAML configuration file:
@@ -268,7 +258,12 @@ make validate-output
 
 1. **Connection Failed**: Ensure Tetragon is running and accessible
    ```bash
-   grpcurl -plaintext localhost:54321 tetragon.FineGuidanceSensors/GetEvents
+   # Test connection using tetra CLI (recommended)
+   tetra getevents --server-address localhost:54321
+   
+   # Or test with grpcurl using proto files (Tetragon doesn't support reflection)
+   grpcurl -plaintext -import-path ../../api/v1 -proto tetragon/tetragon.proto \
+     localhost:54321 tetragon.FineGuidanceSensors/GetEvents
    ```
 
 2. **No Events Output**: Check Tetragon policies are loaded and generating events
@@ -280,8 +275,22 @@ make validate-output
 # Enable verbose logging
 LOG_LEVEL=debug ./to_oscf
 
-# Output raw Tetragon events for comparison  
+# Test Tetragon connectivity first (most reliable method)
+tetra getevents --server-address localhost:54321
+
+# Check if gRPC server is running
+netstat -ln | grep 54321
+
+# Compare raw vs converted events
 tetra getevents -o json > tetragon-raw.json
+./to_oscf --config config.yaml > ocsf-events.json
+
+# Alternative: grpcurl (requires correct proto paths - adjust as needed)
+grpcurl -plaintext \
+  -import-path /path/to/tetragon/api/v1 \
+  -proto tetragon/sensors.proto \
+  localhost:54321 \
+  tetragon.FineGuidanceSensors/GetEvents
 ```
 
 ## Contributing
