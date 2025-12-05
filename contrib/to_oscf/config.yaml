@@ -1,0 +1,28 @@
+# Tetragon to OCSF Configuration
+tetragon:
+  server_address: "localhost:54321"
+
+output:
+  format: "json"
+  indent: true
+
+ocsf:
+  schema_version: "1.7.0"
+  product:
+    name: "Tetragon"
+    vendor: "Cilium"
+    version: "1.0.0"
+    feature: "Runtime Security Observability"
+    uid: "tetragon-001"
+  
+  mappings:
+    process_kprobe: "system_activity.process_activity"
+    process_tracepoint: "system_activity.kernel_activity"
+    process_uprobe: "application_activity.process_activity"
+    process_exec: "system_activity.process_activity.launch"
+    process_exit: "system_activity.process_activity.terminate"
+  
+  metadata:
+    environment: "production"
+    datacenter: "unknown"
+    deployment: "kubernetes"

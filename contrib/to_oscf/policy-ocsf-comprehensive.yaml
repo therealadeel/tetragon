@@ -1,0 +1,140 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "ocsf-comprehensive-monitoring"
+spec:
+  kprobes:
+  # Process execution monitoring
+  - call: "sys_execve"
+    syscall: true
+    args:
+    - index: 0
+      type: "string"
+    - index: 1
+      type: "char_buf"
+      returnCopy: false
+    - index: 2  
+      type: "char_buf"
+      returnCopy: false
+    returnArg:
+      index: 0
+      type: "int"
+
+  # File system monitoring
+  - call: "sys_openat"
+    syscall: true
+    args:
+    - index: 0
+      type: int
+    - index: 1
+      type: "string"
+    - index: 2
+      type: "int"
+    returnArg:
+      index: 0
+      type: "int"
+    selectors:
+    - matchArgs:
+      - index: 1
+        operator: "Prefix"
+        values:
+        - "/etc/"
+        - "/usr/bin/"
+        - "/tmp/"
+
+  - call: "sys_write"
+    syscall: true
+    args:
+    - index: 0
+      type: int
+    - index: 1
+      type: "char_buf"
+      returnCopy: false
+    - index: 2
+      type: "size_t"
+    returnArg:
+      index: 0
+      type: "size_t"
+
+  - call: "sys_read"
+    syscall: true 
+    args:
+    - index: 0
+      type: int
+    - index: 1
+      type: "char_buf"
+      returnCopy: false
+    - index: 2
+      type: "size_t"
+    returnArg:
+      index: 0
+      type: "size_t"
+
+  - call: "sys_close"
+    syscall: true
+    args:
+    - index: 0
+      type: int
+    returnArg:
+      index: 0
+      type: "int"
+
+  # Network monitoring
+  - call: "sys_connect"
+    syscall: true
+    args:
+    - index: 0
+      type: int
+    - index: 1
+      type: "sockaddr"
+    - index: 2
+      type: int
+    returnArg:
+      index: 0
+      type: "int"
+
+  - call: "sys_bind"
+    syscall: true
+    args:
+    - index: 0
+      type: int
+    - index: 1
+      type: "sockaddr"
+    - index: 2
+      type: int
+    returnArg:
+      index: 0
+      type: "int"
+
+  # Memory operations
+  - call: "sys_mmap"
+    syscall: true
+    args:
+    - index: 0
+      type: "ulong"
+    - index: 1
+      type: "size_t"
+    - index: 2
+      type: "int"
+    - index: 3
+      type: "int"
+    - index: 4
+      type: "int"
+    returnArg:
+      index: 0
+      type: "ulong"
+
+  # Module loading
+  - call: "sys_init_module"
+    syscall: true
+    args:
+    - index: 0
+      type: "char_buf"
+      returnCopy: false
+    - index: 1
+      type: "ulong"
+    - index: 2
+      type: "string"
+    returnArg:
+      index: 0
+      type: "int"
