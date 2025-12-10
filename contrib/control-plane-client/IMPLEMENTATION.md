@@ -2,7 +2,7 @@
 
 ## Overview
 
-I've built a highly configurable, modular, and robust control plane client for Tetragon that follows the design pattern of the file-mod-enricher. The client manages tracing policies through a centralized management REST API.
+A highly configurable, modular, and robust control plane client for Tetragon that manages tracing policies through a centralized management REST API. The client features incremental policy updates, comprehensive retry logic, and centralized logging.
 
 ## Architecture
 
@@ -13,44 +13,70 @@ control-plane-client/
 ├── config/          - Configuration loading and validation
 ├── types/           - Data structures and API models
 ├── apiclient/       - Management API HTTP client
-├── cache/           - In-memory state storage
+├── cache/           - In-memory state storage with policy inventory
 ├── metadata/        - System metadata collection (IMDSv2, hostid)
-├── retry/           - Exponential backoff retry logic
+├── retry/           - Exponential backoff retry logic with debug logging
 ├── tetragon/        - Tetragon gRPC client wrapper
-├── client/          - Main orchestration logic
+├── policy/          - Policy parsing, diffing, and incremental updates
+├── client/          - Main orchestration logic with centralized logger
 └── main.go          - CLI entry point
 ```
 
 ## Key Features
 
 ### 1. **Client Registration**
-- Collects system metadata (hostname, instance_id, environment, architecture, IP, tags)
+- Collects system metadata (hostname, instance_id, environment, architecture, IP, deployment_type, tags)
+- Deployment type: `standalone` or `kubernetes`
 - Attempts to retrieve instance_id from AWS IMDSv2 if available
 - Falls back to `/etc/machine-id` or `hostid` if IMDS unavailable
-- Caches client_id, policy_version, and policy_sha256 in-memory to avoid re-registration and redundant updates
+- Caches client_id for persistent registration across restarts
+- Sends same client_id for same hostname+instance_id combination
 
-### 2. **Policy Management**
+### 2. **Incremental Policy Management** 🆕
+- **Efficient updates**: Only adds, updates, or deletes changed policies
+- **Smart diffing**: Compares SHA256 hashes to detect policy changes
+- **Reduced downtime**: Unchanged policies remain active during updates
+- **Policy inventory tracking**: Maintains cache of current policy state
+- **Fallback support**: Can disable incremental mode for full replacement
 - Fetches versioned policies from management API as base64-encoded YAML
-- Only updates when policy version changes (version-based caching)
+- SHA256 hash verification for policy content integrity
 - Optionally cleans up existing policies on startup
-- Parses multi-document YAML (---  separated policies)
-- Applies policies to Tetragon via gRPC `AddTracingPolicy`
+- Parses multi-document YAML (--- separated policies)
 
 ### 3. **Health Reporting**
 - Periodically reports client health to management API
-- Includes policy version and status of all loaded policies
-- Reports "healthy" or "degraded" based on policy errors
+- Includes:
+  - Policy version from management API
+  - Policy SHA256 hash
+  - Tetragon server version
+  - Status of all loaded policies
+- Reports "healthy" or "degraded" based on policy state
+- Checks for `TP_STATE_ENABLED` status
 
-### 4. **Retry Logic**
+### 4. **Retry Logic with Debug Logging** 🆕
 - Exponential backoff with jitter for all HTTP requests
 - Configurable max attempts, initial backoff, max backoff, and multiplier
 - Distinguishes between retryable (408, 429, 5xx) and non-retryable HTTP errors
 - Context-aware cancellation
+- **Debug mode**: Detailed logging of retry attempts, backoff calculations, and HTTP status codes
 
-### 5. **Configuration**
+### 5. **Centralized Logging** 🆕
+- Structured logging with automatic level checking
+- Log levels: `debug`, `info`, `warn`, `error`
+- Prefixed output: `[DEBUG]`, `[INFO]`, `[WARN]`, `[ERROR]`
+- No scattered `if isDebug()` checks - handled automatically by logger
+- Debug logging shows:
+  - Registration metadata
+  - Policy diff summaries (add/update/delete counts)
+  - Individual policy operations
+  - Retry attempts and backoff durations
+
+### 6. **Configuration**
 - YAML-based configuration with comprehensive defaults
 - Command-line overrides for key parameters
+- Environment variable support (`TETRAGON_CONTROL_PLANE_AUTH_TOKEN`)
 - Validates all configuration on startup
+- JSON or text logging formats
 
 ## API Endpoints
 
@@ -64,6 +90,7 @@ Request: {
   "environment": "production",
   "architecture": "amd64",
   "ip_address": "10.0.1.50",
+  "deployment_type": "kubernetes",
   "tags": ["region:us-west-2"]
 }
 Response: {
@@ -112,6 +139,7 @@ tetragon:
 
 registration:
   environment: "production"
+  deployment_type: "kubernetes"  # "kubernetes" or "standalone"
   tags: ["region:us-west-2", "team:security"]
   use_imds: true
   imds_timeout: "5s"
@@ -119,14 +147,15 @@ registration:
 policy_sync:
   enabled: true
   interval: "60s"
-  cleanup_existing: true
+  incremental: true        # Use incremental updates (default: true)
+  cleanup_existing: false  # Clean up existing policies on startup
 
 health_reporting:
   enabled: true
   interval: 300s
 
 logging:
-  level: "info"
+  level: "info"  # "debug", "info", "warn", "error"
   format: "json"
 ```
 
@@ -148,65 +177,162 @@ make build
 
 # Run with debug logging
 ./control-plane-client --config config.yaml --log-level debug
+
+# Run with deployment type override
+./control-plane-client --config config.yaml --deployment-type standalone
 ```
 
 ## Testing
 
 A comprehensive testing guide is provided in `TESTING.md`, including:
 
-1. Mock management API server implementation
+1. Mock management API server implementation with:
+   - Bearer token authentication
+   - Persistent client registration
+   - Dynamic policy updates (add/remove variants)
+   - SHA256 hash calculation
 2. Step-by-step testing scenarios
 3. Integration testing with local Tetragon
 4. Troubleshooting guide
 
-## Files Created
+Build and run the test server:
+```bash
+go build -o test-server test-server.go
+./test-server
+```
 
-✅ **Documentation:**
-- `README.md` - Complete user documentation with API specs and architecture
-- `TESTING.md` - Comprehensive testing guide with mock server code
-- `IMPLEMENTATION.md` - This file - implementation summary
+## Implementation Details
 
-✅ **Configuration:**
-- `config-example.yaml` - Fully documented configuration template
-- `example-policies.yaml` - Sample tracing policies for testing
-- `.gitignore` - Proper ignore patterns
+### Policy Package (`policy/policy.go`)
 
-✅ **Build Files:**
-- `go.mod` - Go module with all dependencies
-- `Makefile` - Build, test, install, and run targets
-- `setup.sh` - Setup script with instructions
+The policy package provides incremental update logic:
 
-✅ **Types:**
-- `types/types.go` - All data structures (properly formatted)
+**Key Types:**
+- `Document`: Represents a single policy with name, namespace, content, and SHA256 hash
+- `Metadata`: Lightweight representation for inventory tracking (name, namespace, hash)
+- `Diff`: Tracks policies to add, update, and delete
 
-⚠️ **Core Implementation Files (Need Manual Creation):**
+**Key Functions:**
+- `ParsePolicies(base64yaml string)`: Parses multi-document YAML into individual policy documents
+- `ComputeDiff(current, desired map[string]Metadata)`: Calculates the minimal set of changes needed
+- `Key()`: Generates unique identifier "namespace/name" for each policy
+- `IsEmpty()`: Checks if diff has any changes
+- `Summary()`: Returns human-readable diff summary
 
-Due to file corruption during automated creation, the following Go source files need to be created manually. The complete, working implementation for each is available in the chat history:
+**Diff Algorithm:**
+1. Identify policies to delete (in current but not in desired)
+2. Identify policies to add (in desired but not in current)
+3. Identify policies to update (in both but with different SHA256 hash)
 
-1. `config/config.go` - ~200 lines - Configuration structures, loading, validation, and defaults
-2. `retry/retry.go` - ~120 lines - Exponential backoff retry logic with jitter
-3. `metadata/collector.go` - ~150 lines - System metadata collection (IMDSv2, hostid, IP, etc.)
-4. `apiclient/client.go` - ~150 lines - HTTP client for management API with retry logic  
-5. `cache/cache.go` - ~60 lines - In-memory caching for client ID, policy version, and policy SHA256
-6. `tetragon/client.go` - ~170 lines - Tetragon gRPC client wrapper
-7. `client/client.go` - ~280 lines - Main orchestration with registration, sync, and health reporting
-8. `main.go` - ~150 lines - CLI with flag parsing and signal handling
+### Centralized Logger (`client/client.go`)
+
+The logger type provides automatic level checking:
+
+```go
+type logger struct {
+    level string
+}
+
+func (l *logger) debug(format string, args ...interface{})
+func (l *logger) info(format string, args ...interface{})
+func (l *logger) warn(format string, args ...interface{})
+func (l *logger) error(format string, args ...interface{})
+```
+
+Benefits:
+- No scattered `if isDebug()` checks throughout code
+- Consistent prefix formatting `[DEBUG]`, `[INFO]`, `[WARN]`, `[ERROR]`
+- Single source of truth for log level checking
+
+### Incremental Policy Updates
+
+**Flow:**
+1. Fetch policies from management API
+2. Parse base64-encoded YAML into individual documents
+3. Compare with cached inventory using SHA256 hashes
+4. Compute diff (add/update/delete)
+5. Apply only the changed policies:
+   - Delete removed policies via gRPC `DeleteTracingPolicy`
+   - Update modified policies (delete + add)
+   - Add new policies via gRPC `AddTracingPolicy`
+6. Update cache with new inventory
+
+**Benefits:**
+- Reduced Tetragon server load
+- Faster sync times (only process changes)
+- Minimized policy downtime
+- Unchanged policies remain active
+
+**Fallback:**
+Set `incremental: false` to use full replacement mode (delete all, re-add all).
+
+### Startup Cleanup
+
+When `cleanup_existing: true`, the client deletes all existing Tetragon policies on startup before the first sync. This ensures a clean slate.
+
+### Health Status Determination
+
+The client reports "degraded" if any policy has:
+- `state != "TP_STATE_ENABLED"` (protobuf enum string)
+- Non-empty `error` field
+
+Otherwise, reports "healthy".
+
+## Files Status
+
+✅ **All files created and working:**
+
+**Documentation:**
+- `README.md` - Complete user documentation
+- `TESTING.md` - Comprehensive testing guide
+- `IMPLEMENTATION.md` - This file
+- `config-example.yaml` - Configuration template
+
+**Core Implementation:**
+- `config/config.go` - Configuration with validation
+- `types/types.go` - API data structures
+- `retry/retry.go` - Retry logic with debug logging
+- `metadata/collector.go` - System metadata collection
+- `apiclient/client.go` - HTTP client with auth
+- `cache/cache.go` - In-memory state storage with inventory
+- `tetragon/client.go` - Tetragon gRPC wrapper
+- `policy/policy.go` - Policy parsing and diffing
+- `client/client.go` - Main orchestration with centralized logger
+- `main.go` - CLI entry point
+
+**Build & Test:**
+- `go.mod` - Go module dependencies
+- `Makefile` - Build targets
+- `test-server.go` - Mock management API (build tag: `ignore`)
+- `example-policies.yaml` - Sample policies
+- `.gitignore` - Git ignore patterns
 
 ## Implementation Highlights
 
 ### Modular Design
 Each package has a single, well-defined responsibility following SOLID principles.
 
+### Code Quality
+- Centralized logger eliminates duplicate level checking
+- Large functions broken into focused helpers:
+  - `syncPolicies` → `applyPolicies` + `updatePolicyState`
+  - `reportHealth` → `getTetragonVersion` + `buildHealthReport`
+- Incremental updates reduce unnecessary operations
+
 ### Robust Error Handling
-- All errors are wrapped with context using `fmt.Errorf`
-- Retry logic for transient failures
+- All errors wrapped with context using `fmt.Errorf`
+- Exponential backoff retry with jitter for transient failures
 - Graceful degradation (logs warnings instead of failing)
+- Debug logging for troubleshooting retry attempts and policy operations
 
 ### Production-Ready
 - Configurable timeouts and retry behavior
 - Graceful shutdown on SIGINT/SIGTERM
-- Structured logging (JSON or text)
-- Comprehensive validation
+- Structured logging (JSON or text) with configurable levels
+- Comprehensive configuration validation
+- Bearer token authentication
+- SHA256 hash verification for policy integrity
+- Deployment type tracking (standalone/kubernetes)
 
 ### Follows Tetragon Patterns
 - Mirrors file-mod-enricher structure
