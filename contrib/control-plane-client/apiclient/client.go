@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
 	"github.com/cilium/tetragon/contrib/control-plane-client/config"
+	"github.com/cilium/tetragon/contrib/control-plane-client/logger"
 	"github.com/cilium/tetragon/contrib/control-plane-client/retry"
 	"github.com/cilium/tetragon/contrib/control-plane-client/types"
 )
@@ -19,16 +21,41 @@ type Client struct {
 	authToken  string
 	httpClient *http.Client
 	retryer    *retry.Retryer
+	logger     logger.Logger
 }
 
-func NewClient(cfg config.ManagementAPIConfig, logLevel string) *Client {
+// NewClient creates a new API client with configurable HTTP client
+func NewClient(cfg config.ManagementAPIConfig, log logger.Logger) *Client {
+	return NewClientWithHTTPClient(cfg, log, nil)
+}
+
+// NewClientWithHTTPClient creates a new API client with a custom HTTP client
+func NewClientWithHTTPClient(cfg config.ManagementAPIConfig, log logger.Logger, httpClient *http.Client) *Client {
+	if httpClient == nil {
+		// Create default HTTP client with configured transport
+		transport := &http.Transport{
+			MaxIdleConns:        cfg.HTTPClient.MaxIdleConns,
+			MaxIdleConnsPerHost: cfg.HTTPClient.MaxIdleConnsPerHost,
+			IdleConnTimeout:     cfg.HTTPClient.IdleConnTimeout,
+			TLSHandshakeTimeout: cfg.HTTPClient.TLSHandshakeTimeout,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+		}
+
+		httpClient = &http.Client{
+			Timeout:   cfg.Timeout,
+			Transport: transport,
+		}
+	}
+
 	return &Client{
-		baseURL:   cfg.BaseURL,
-		authToken: cfg.AuthToken,
-		httpClient: &http.Client{
-			Timeout: cfg.Timeout,
-		},
-		retryer: retry.NewRetryerWithLogLevel(cfg.Retry, logLevel),
+		baseURL:    cfg.BaseURL,
+		authToken:  cfg.AuthToken,
+		httpClient: httpClient,
+		retryer:    retry.NewRetryer(cfg.Retry, log),
+		logger:     log,
 	}
 }
 

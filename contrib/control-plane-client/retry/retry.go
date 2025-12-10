@@ -2,40 +2,37 @@ package retry
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
-	"log"
 	"math"
-	"math/rand"
-	"strings"
 	"time"
 
 	"github.com/cilium/tetragon/contrib/control-plane-client/config"
+	"github.com/cilium/tetragon/contrib/control-plane-client/logger"
 )
 
 type Retryer struct {
-	config   config.RetryConfig
-	rng      *rand.Rand
-	logLevel string
+	config config.RetryConfig
+	logger logger.Logger
 }
 
-func NewRetryer(cfg config.RetryConfig) *Retryer {
+func NewRetryer(cfg config.RetryConfig, log logger.Logger) *Retryer {
 	return &Retryer{
-		config:   cfg,
-		rng:      rand.New(rand.NewSource(time.Now().UnixNano())),
-		logLevel: "",
+		config: cfg,
+		logger: log,
 	}
 }
 
-func NewRetryerWithLogLevel(cfg config.RetryConfig, logLevel string) *Retryer {
-	return &Retryer{
-		config:   cfg,
-		rng:      rand.New(rand.NewSource(time.Now().UnixNano())),
-		logLevel: strings.ToLower(logLevel),
+// secureRandom generates a cryptographically secure random float64 [0.0, 1.0)
+func secureRandom() float64 {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Fallback to time-based if crypto/rand fails
+		return float64(time.Now().UnixNano()%1000) / 1000.0
 	}
-}
-
-func (r *Retryer) isDebug() bool {
-	return r.logLevel == "debug"
+	// Convert bytes to uint64, then to float64 in range [0, 1)
+	return float64(binary.BigEndian.Uint64(b[:])&((1<<53)-1)) / float64(1<<53)
 }
 
 type RetryFunc func(ctx context.Context) error
@@ -44,21 +41,24 @@ func (r *Retryer) Do(ctx context.Context, fn RetryFunc) error {
 	var lastErr error
 
 	for attempt := 0; attempt < r.config.MaxAttempts; attempt++ {
-		if ctx.Err() != nil {
-			if r.isDebug() {
-				log.Printf("[retry] Context cancelled/expired before attempt %d", attempt+1)
-			}
+		// Check context before each attempt
+		select {
+		case <-ctx.Done():
+			r.logger.Debug("context cancelled/expired before attempt %d", attempt+1)
 			return ctx.Err()
+		default:
 		}
 
-		if r.isDebug() {
-			log.Printf("[retry] Attempt %d/%d", attempt+1, r.config.MaxAttempts)
-		}
+		r.logger.Debug("attempt %d/%d", attempt+1, r.config.MaxAttempts)
 
-		err := fn(ctx)
+		// Create child context with timeout for this specific attempt
+		attemptCtx, cancel := context.WithTimeout(ctx, r.config.InitialBackoff*10)
+		err := fn(attemptCtx)
+		cancel()
+
 		if err == nil {
-			if r.isDebug() && attempt > 0 {
-				log.Printf("[retry] Succeeded on attempt %d/%d", attempt+1, r.config.MaxAttempts)
+			if attempt > 0 {
+				r.logger.Debug("succeeded on attempt %d/%d", attempt+1, r.config.MaxAttempts)
 			}
 			return nil
 		}
@@ -66,23 +66,21 @@ func (r *Retryer) Do(ctx context.Context, fn RetryFunc) error {
 		lastErr = err
 
 		if attempt == r.config.MaxAttempts-1 {
-			if r.isDebug() {
-				log.Printf("[retry] Final attempt failed: %v", err)
-			}
+			r.logger.Debug("final attempt failed: %v", err)
 			break
 		}
 
 		backoff := r.calculateBackoff(attempt)
-		if r.isDebug() {
-			log.Printf("[retry] Attempt %d failed: %v. Retrying in %v...", attempt+1, err, backoff)
-		}
+		r.logger.Debug("attempt %d failed: %v. Retrying in %v...", attempt+1, err, backoff)
 
+		// Use timer instead of time.After to be more context-aware
+		timer := time.NewTimer(backoff)
 		select {
-		case <-time.After(backoff):
+		case <-timer.C:
+			// Backoff completed, continue to next attempt
 		case <-ctx.Done():
-			if r.isDebug() {
-				log.Printf("[retry] Context cancelled during backoff")
-			}
+			timer.Stop()
+			r.logger.Debug("context cancelled during backoff")
 			return ctx.Err()
 		}
 	}
@@ -94,19 +92,15 @@ func (r *Retryer) calculateBackoff(attempt int) time.Duration {
 	backoff := float64(r.config.InitialBackoff) * math.Pow(r.config.BackoffMultiplier, float64(attempt))
 
 	if backoff > float64(r.config.MaxBackoff) {
-		if r.isDebug() {
-			log.Printf("[retry] Backoff capped at max: %v (calculated: %v)", r.config.MaxBackoff, time.Duration(backoff))
-		}
+		r.logger.Debug("backoff capped at max: %v (calculated: %v)", r.config.MaxBackoff, time.Duration(backoff))
 		backoff = float64(r.config.MaxBackoff)
 	}
 
-	jitterFactor := 0.5 + r.rng.Float64()*0.5
+	jitterFactor := 0.5 + secureRandom()*0.5
 	jitter := backoff * jitterFactor
 
-	if r.isDebug() {
-		log.Printf("[retry] Backoff calculation: base=%v, multiplier=%.2f, attempt=%d, result=%v (jitter factor: %.2f)",
-			r.config.InitialBackoff, r.config.BackoffMultiplier, attempt, time.Duration(jitter), jitterFactor)
-	}
+	r.logger.Debug("backoff calculation: base=%v, multiplier=%.2f, attempt=%d, result=%v (jitter factor: %.2f)",
+		r.config.InitialBackoff, r.config.BackoffMultiplier, attempt, time.Duration(jitter), jitterFactor)
 
 	return time.Duration(jitter)
 }
@@ -136,13 +130,11 @@ func (r *Retryer) DoHTTP(ctx context.Context, fn RetryFuncHTTP) error {
 		statusCode, err := fn(ctx)
 		if err != nil {
 			if statusCode > 0 && !r.IsRetryableHTTPCode(statusCode) {
-				if r.isDebug() {
-					log.Printf("[retry] HTTP %d is not retryable, aborting retry loop", statusCode)
-				}
+				r.logger.Debug("HTTP %d is not retryable, aborting retry loop", statusCode)
 				return &NonRetryableError{Err: &HTTPError{StatusCode: statusCode, Message: err.Error()}}
 			}
-			if r.isDebug() && statusCode > 0 {
-				log.Printf("[retry] HTTP %d is retryable, will retry", statusCode)
+			if statusCode > 0 {
+				r.logger.Debug("HTTP %d is retryable, will retry", statusCode)
 			}
 			return err
 		}

@@ -18,10 +18,18 @@ type Config struct {
 }
 
 type ManagementAPIConfig struct {
-	BaseURL   string        `yaml:"base_url"`
-	AuthToken string        `yaml:"auth_token"` // Can also be set via TETRAGON_CONTROL_PLANE_AUTH_TOKEN env var
-	Timeout   time.Duration `yaml:"timeout"`
-	Retry     RetryConfig   `yaml:"retry"`
+	BaseURL    string           `yaml:"base_url"`
+	AuthToken  string           `yaml:"auth_token"` // Can also be set via TETRAGON_CONTROL_PLANE_AUTH_TOKEN env var
+	Timeout    time.Duration    `yaml:"timeout"`
+	Retry      RetryConfig      `yaml:"retry"`
+	HTTPClient HTTPClientConfig `yaml:"http_client"`
+}
+
+type HTTPClientConfig struct {
+	MaxIdleConns        int           `yaml:"max_idle_conns"`
+	MaxIdleConnsPerHost int           `yaml:"max_idle_conns_per_host"`
+	IdleConnTimeout     time.Duration `yaml:"idle_conn_timeout"`
+	TLSHandshakeTimeout time.Duration `yaml:"tls_handshake_timeout"`
 }
 
 type RetryConfig struct {
@@ -90,6 +98,18 @@ func (c *Config) SetDefaults() {
 
 	if c.ManagementAPI.Timeout == 0 {
 		c.ManagementAPI.Timeout = 30 * time.Second
+	}
+	if c.ManagementAPI.HTTPClient.MaxIdleConns == 0 {
+		c.ManagementAPI.HTTPClient.MaxIdleConns = 100
+	}
+	if c.ManagementAPI.HTTPClient.MaxIdleConnsPerHost == 0 {
+		c.ManagementAPI.HTTPClient.MaxIdleConnsPerHost = 10
+	}
+	if c.ManagementAPI.HTTPClient.IdleConnTimeout == 0 {
+		c.ManagementAPI.HTTPClient.IdleConnTimeout = 90 * time.Second
+	}
+	if c.ManagementAPI.HTTPClient.TLSHandshakeTimeout == 0 {
+		c.ManagementAPI.HTTPClient.TLSHandshakeTimeout = 10 * time.Second
 	}
 	if c.ManagementAPI.Retry.MaxAttempts == 0 {
 		c.ManagementAPI.Retry.MaxAttempts = 5

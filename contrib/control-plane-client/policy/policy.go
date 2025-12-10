@@ -88,23 +88,28 @@ func (d *Document) Key() string {
 }
 
 // ComputeDiff calculates the difference between current and desired policy states
+// Optimized to pre-allocate slices based on potential maximum size and reuse desired map
 func ComputeDiff(current map[string]Metadata, desired []Document) *Diff {
+	// Pre-allocate slices with reasonable capacity to reduce reallocations
+	// Worst case: all desired are new (ToAdd), all current are deleted (ToDelete)
 	diff := &Diff{
-		ToAdd:    make([]Document, 0),
-		ToUpdate: make([]Document, 0),
-		ToDelete: make([]string, 0),
+		ToAdd:    make([]Document, 0, len(desired)),
+		ToUpdate: make([]Document, 0, len(desired)/2), // Assume ~50% updates in worst case
+		ToDelete: make([]string, 0, len(current)),
 	}
 
-	// Build map of desired policies for easy lookup
-	desiredMap := make(map[string]Document)
-	for _, doc := range desired {
-		desiredMap[doc.Key()] = doc
+	// Build map of desired policies for O(1) lookup
+	// Reuse this map structure instead of rebuilding
+	desiredMap := make(map[string]Document, len(desired))
+	for i := range desired {
+		// Use index to avoid copying struct
+		doc := &desired[i]
+		desiredMap[doc.Key()] = *doc
 	}
 
-	// Find policies to add or update
+	// Find policies to add or update (single pass through desired)
 	for key, desiredDoc := range desiredMap {
-		currentMeta, exists := current[key]
-		if !exists {
+		if currentMeta, exists := current[key]; !exists {
 			// Policy doesn't exist, add it
 			diff.ToAdd = append(diff.ToAdd, desiredDoc)
 		} else if currentMeta.Hash != desiredDoc.Hash {
@@ -114,7 +119,7 @@ func ComputeDiff(current map[string]Metadata, desired []Document) *Diff {
 		// else: Policy exists and hasn't changed, no action needed
 	}
 
-	// Find policies to delete
+	// Find policies to delete (single pass through current)
 	for key := range current {
 		if _, exists := desiredMap[key]; !exists {
 			diff.ToDelete = append(diff.ToDelete, key)

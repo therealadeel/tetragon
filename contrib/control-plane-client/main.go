@@ -31,44 +31,66 @@ func (a *arrayFlags) Set(value string) error {
 	return nil
 }
 
+// cliOptions holds command-line flag values
+type cliOptions struct {
+	configFile       string
+	managementAPIURL string
+	tetragonAddress  string
+	environment      string
+	tags             arrayFlags
+	logLevel         string
+	logFormat        string
+	showVersion      bool
+}
+
 func main() {
-	var (
-		configFile       = flag.String("config", "", "Path to configuration file")
-		managementAPIURL = flag.String("management-api-url", "", "Management API base URL (overrides config)")
-		tetragonAddress  = flag.String("tetragon-address", "", "Tetragon gRPC server address (overrides config)")
-		environment      = flag.String("environment", "", "Environment name (overrides config)")
-		tags             arrayFlags
-		logLevel         = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
-		logFormat        = flag.String("log-format", "text", "Log format (text, json)")
-		showVersion      = flag.Bool("version", false, "Show version information")
-	)
+	if err := run(); err != nil {
+		log.Fatalf("Fatal error: %v", err)
+	}
+}
 
-	flag.Var(&tags, "tag", "Additional tags (can be specified multiple times, overrides config)")
-	flag.Parse()
+// run is the main application logic, separated for testability
+func run() error {
+	opts := parseFlags()
 
-	if *showVersion {
+	if opts.showVersion {
 		fmt.Printf("control-plane-client version %s\n", version)
-		os.Exit(0)
+		return nil
 	}
 
-	cfg, err := loadConfig(*configFile, *managementAPIURL, *tetragonAddress, *environment, tags)
+	cfg, err := loadConfigWithOverrides(opts)
 	if err != nil {
-		log.Fatalf("Configuration error: %v", err)
+		return fmt.Errorf("configuration error: %w", err)
 	}
 
-	// Apply command-line overrides for logging
-	if *logLevel != "info" { // "info" is the default flag value
-		cfg.Logging.Level = *logLevel
-	}
-	if *logFormat != "text" { // "text" is the default flag value
-		cfg.Logging.Format = *logFormat
-	}
-
-	// Setup logging from config
 	setupLogging(cfg.Logging.Level, cfg.Logging.Format)
 
+	ctx := setupSignalHandler()
+
+	return runClient(ctx, cfg)
+}
+
+// parseFlags parses command-line flags and returns options
+func parseFlags() *cliOptions {
+	opts := &cliOptions{}
+
+	flag.StringVar(&opts.configFile, "config", "", "Path to configuration file")
+	flag.StringVar(&opts.managementAPIURL, "management-api-url", "", "Management API base URL (overrides config)")
+	flag.StringVar(&opts.tetragonAddress, "tetragon-address", "", "Tetragon gRPC server address (overrides config)")
+	flag.StringVar(&opts.environment, "environment", "", "Environment name (overrides config)")
+	flag.Var(&opts.tags, "tag", "Additional tags (can be specified multiple times, overrides config)")
+	flag.StringVar(&opts.logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
+	flag.StringVar(&opts.logFormat, "log-format", "text", "Log format (text, json)")
+	flag.BoolVar(&opts.showVersion, "version", false, "Show version information")
+
+	flag.Parse()
+
+	return opts
+}
+
+// setupSignalHandler creates a context that cancels on SIGINT/SIGTERM
+func setupSignalHandler() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -79,22 +101,30 @@ func main() {
 		cancel()
 	}()
 
+	return ctx
+}
+
+// runClient creates and starts the control plane client
+func runClient(ctx context.Context, cfg *config.Config) error {
 	cpClient, err := client.NewControlPlaneClient(cfg)
 	if err != nil {
-		log.Fatalf("Failed to create control plane client: %v", err)
+		return fmt.Errorf("failed to create control plane client: %w", err)
 	}
 
 	if err := cpClient.Start(ctx); err != nil {
-		log.Fatalf("Control plane client error: %v", err)
+		return fmt.Errorf("control plane client error: %w", err)
 	}
+
+	return nil
 }
 
-func loadConfig(configFile, managementAPIURL, tetragonAddress, environment string, tags []string) (*config.Config, error) {
+// loadConfigWithOverrides loads configuration and applies command-line overrides
+func loadConfigWithOverrides(opts *cliOptions) (*config.Config, error) {
 	var cfg *config.Config
 	var err error
 
-	if configFile != "" {
-		cfg, err = config.LoadConfig(configFile)
+	if opts.configFile != "" {
+		cfg, err = config.LoadConfig(opts.configFile)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load config file: %w", err)
 		}
@@ -103,20 +133,30 @@ func loadConfig(configFile, managementAPIURL, tetragonAddress, environment strin
 		cfg.SetDefaults()
 	}
 
-	if managementAPIURL != "" {
-		cfg.ManagementAPI.BaseURL = managementAPIURL
+	// Apply command-line overrides
+	if opts.managementAPIURL != "" {
+		cfg.ManagementAPI.BaseURL = opts.managementAPIURL
 	}
 
-	if tetragonAddress != "" {
-		cfg.Tetragon.ServerAddress = tetragonAddress
+	if opts.tetragonAddress != "" {
+		cfg.Tetragon.ServerAddress = opts.tetragonAddress
 	}
 
-	if environment != "" {
-		cfg.Registration.Environment = environment
+	if opts.environment != "" {
+		cfg.Registration.Environment = opts.environment
 	}
 
-	if len(tags) > 0 {
-		cfg.Registration.Tags = tags
+	if len(opts.tags) > 0 {
+		cfg.Registration.Tags = opts.tags
+	}
+
+	// Apply logging overrides
+	if opts.logLevel != "info" { // "info" is the default
+		cfg.Logging.Level = opts.logLevel
+	}
+
+	if opts.logFormat != "text" { // "text" is the default
+		cfg.Logging.Format = opts.logFormat
 	}
 
 	if err := cfg.Validate(); err != nil {
