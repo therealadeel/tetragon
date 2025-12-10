@@ -97,6 +97,16 @@ func (c *ControlPlaneClient) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register with management API: %w", err)
 	}
 
+	// Cleanup existing policies on startup if configured
+	if c.cfg.PolicySync.CleanupExisting {
+		c.logger.info("Cleaning up existing policies...")
+		if err := c.tetragonClient.DeleteAllPolicies(ctx); err != nil {
+			c.logger.warn("Failed to cleanup existing policies: %v", err)
+		} else {
+			c.logger.info("Successfully cleaned up existing policies")
+		}
+	}
+
 	if err := c.syncPolicies(ctx); err != nil {
 		c.logger.warn("Initial policy sync failed: %v", err)
 	}
