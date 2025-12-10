@@ -38,10 +38,11 @@ type TetragonConfig struct {
 }
 
 type RegistrationConfig struct {
-	Environment string        `yaml:"environment"`
-	Tags        []string      `yaml:"tags"`
-	UseIMDS     bool          `yaml:"use_imds"`
-	IMDSTimeout time.Duration `yaml:"imds_timeout"`
+	Environment    string        `yaml:"environment"`
+	DeploymentType string        `yaml:"deployment_type"` // "standalone" or "kubernetes"
+	Tags           []string      `yaml:"tags"`
+	UseIMDS        bool          `yaml:"use_imds"`
+	IMDSTimeout    time.Duration `yaml:"imds_timeout"`
 }
 
 type PolicySyncConfig struct {
@@ -115,6 +116,9 @@ func (c *Config) SetDefaults() {
 
 	if c.Registration.Environment == "" {
 		c.Registration.Environment = "production"
+	}
+	if c.Registration.DeploymentType == "" {
+		c.Registration.DeploymentType = "standalone"
 	}
 	if c.Registration.IMDSTimeout == 0 {
 		c.Registration.IMDSTimeout = 5 * time.Second

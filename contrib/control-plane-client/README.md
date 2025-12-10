@@ -69,6 +69,7 @@ tetragon:
 # Client registration settings
 registration:
   environment: "production"  # dev, stage, live, production
+  deployment_type: "standalone"  # standalone or kubernetes
   tags:
     - "region:us-west-2"
     - "team:security"
@@ -130,6 +131,7 @@ Request:
   "environment": "production",
   "architecture": "amd64",
   "ip_address": "10.0.1.50",
+  "deployment_type": "standalone",
   "tags": ["region:us-west-2", "team:security"]
 }
 ```

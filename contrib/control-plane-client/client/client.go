@@ -141,12 +141,13 @@ func (c *ControlPlaneClient) register(ctx context.Context) error {
 		c.metadataCollector.GetArchitecture(), c.cfg.Registration.Tags)
 
 	req := types.RegistrationRequest{
-		Hostname:     hostname,
-		InstanceID:   instanceID,
-		Environment:  c.cfg.Registration.Environment,
-		Architecture: c.metadataCollector.GetArchitecture(),
-		IPAddress:    ipAddress,
-		Tags:         c.cfg.Registration.Tags,
+		Hostname:       hostname,
+		InstanceID:     instanceID,
+		Environment:    c.cfg.Registration.Environment,
+		Architecture:   c.metadataCollector.GetArchitecture(),
+		IPAddress:      ipAddress,
+		DeploymentType: c.cfg.Registration.DeploymentType,
+		Tags:           c.cfg.Registration.Tags,
 	}
 
 	resp, err := c.apiClient.Register(ctx, req)

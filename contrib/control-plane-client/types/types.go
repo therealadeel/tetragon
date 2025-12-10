@@ -4,12 +4,13 @@ import "time"
 
 // RegistrationRequest represents the client registration payload
 type RegistrationRequest struct {
-	Hostname     string   `json:"hostname"`
-	InstanceID   string   `json:"instance_id"`
-	Environment  string   `json:"environment"`
-	Architecture string   `json:"architecture"`
-	IPAddress    string   `json:"ip_address"`
-	Tags         []string `json:"tags"`
+	Hostname       string   `json:"hostname"`
+	InstanceID     string   `json:"instance_id"`
+	Environment    string   `json:"environment"`
+	Architecture   string   `json:"architecture"`
+	IPAddress      string   `json:"ip_address"`
+	DeploymentType string   `json:"deployment_type"` // "standalone" or "kubernetes"
+	Tags           []string `json:"tags"`
 }
 
 // RegistrationResponse represents the response from client registration
