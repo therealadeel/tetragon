@@ -38,9 +38,10 @@ policy_sync:
 # Health reporting settings
 health_reporting:
   enabled: true
-  interval: "70s"  # How often to report health
+  interval: "75s"  # How often to report health
 
 # Logging
 logging:
   level: "info"  # debug, info, warn, error
-  format: "text"  # json, text
+  format: "json"  # json, text
+  output_directory: "/var/log/tetragon"  # Directory for log files (logs to stdout if empty)

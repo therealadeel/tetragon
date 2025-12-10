@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -10,7 +9,6 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/cilium/tetragon/contrib/control-plane-client/client"
 	"github.com/cilium/tetragon/contrib/control-plane-client/config"
@@ -33,14 +31,15 @@ func (a *arrayFlags) Set(value string) error {
 
 // cliOptions holds command-line flag values
 type cliOptions struct {
-	configFile       string
-	managementAPIURL string
-	tetragonAddress  string
-	environment      string
-	tags             arrayFlags
-	logLevel         string
-	logFormat        string
-	showVersion      bool
+	configFile         string
+	managementAPIURL   string
+	tetragonAddress    string
+	environment        string
+	tags               arrayFlags
+	logLevel           string
+	logFormat          string
+	logOutputDirectory string
+	showVersion        bool
 }
 
 func main() {
@@ -63,8 +62,6 @@ func run() error {
 		return fmt.Errorf("configuration error: %w", err)
 	}
 
-	setupLogging(cfg.Logging.Level, cfg.Logging.Format)
-
 	ctx := setupSignalHandler()
 
 	return runClient(ctx, cfg)
@@ -79,8 +76,9 @@ func parseFlags() *cliOptions {
 	flag.StringVar(&opts.tetragonAddress, "tetragon-address", "", "Tetragon gRPC server address (overrides config)")
 	flag.StringVar(&opts.environment, "environment", "", "Environment name (overrides config)")
 	flag.Var(&opts.tags, "tag", "Additional tags (can be specified multiple times, overrides config)")
-	flag.StringVar(&opts.logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
-	flag.StringVar(&opts.logFormat, "log-format", "text", "Log format (text, json)")
+	flag.StringVar(&opts.logLevel, "log-level", "", "Log level: debug, info, warn, error (overrides config)")
+	flag.StringVar(&opts.logFormat, "log-format", "", "Log format: text, json (overrides config)")
+	flag.StringVar(&opts.logOutputDirectory, "log-output-directory", "", "Directory for log files, empty for stdout (overrides config)")
 	flag.BoolVar(&opts.showVersion, "version", false, "Show version information")
 
 	flag.Parse()
@@ -150,13 +148,17 @@ func loadConfigWithOverrides(opts *cliOptions) (*config.Config, error) {
 		cfg.Registration.Tags = opts.tags
 	}
 
-	// Apply logging overrides
-	if opts.logLevel != "info" { // "info" is the default
+	// Apply logging overrides (only if explicitly set)
+	if opts.logLevel != "" {
 		cfg.Logging.Level = opts.logLevel
 	}
 
-	if opts.logFormat != "text" { // "text" is the default
+	if opts.logFormat != "" {
 		cfg.Logging.Format = opts.logFormat
+	}
+
+	if opts.logOutputDirectory != "" {
+		cfg.Logging.OutputDirectory = opts.logOutputDirectory
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -164,27 +166,4 @@ func loadConfigWithOverrides(opts *cliOptions) (*config.Config, error) {
 	}
 
 	return cfg, nil
-}
-
-func setupLogging(level, format string) {
-	if format == "json" {
-		log.SetFlags(0)
-		log.SetOutput(&jsonLogger{})
-	} else {
-		log.SetFlags(log.LstdFlags)
-	}
-}
-
-type jsonLogger struct{}
-
-func (j *jsonLogger) Write(p []byte) (n int, err error) {
-	logEntry := map[string]interface{}{
-		"timestamp": time.Now().Format(time.RFC3339),
-		"message":   strings.TrimSpace(string(p)),
-	}
-	data, err := json.Marshal(logEntry)
-	if err != nil {
-		return 0, err
-	}
-	return os.Stderr.Write(append(data, '\n'))
 }

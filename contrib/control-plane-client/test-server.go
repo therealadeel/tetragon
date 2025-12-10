@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 package main
 
 import (
@@ -57,13 +60,12 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 }
 
 type RegistrationRequest struct {
-	Hostname       string   `json:"hostname"`
-	InstanceID     string   `json:"instance_id"`
-	Environment    string   `json:"environment"`
-	Architecture   string   `json:"architecture"`
-	IPAddress      string   `json:"ip_address"`
-	DeploymentType string   `json:"deployment_type"`
-	Tags           []string `json:"tags"`
+	Hostname     string   `json:"hostname"`
+	InstanceID   string   `json:"instance_id"`
+	Environment  string   `json:"environment"`
+	Architecture string   `json:"architecture"`
+	IPAddress    string   `json:"ip_address"`
+	Tags         []string `json:"tags"`
 }
 
 type RegistrationResponse struct {
@@ -109,8 +111,8 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Registration: hostname=%s, instance_id=%s, env=%s, deployment=%s, arch=%s, ip=%s, tags=%v",
-		req.Hostname, req.InstanceID, req.Environment, req.DeploymentType, req.Architecture, req.IPAddress, req.Tags)
+	log.Printf("Registration: hostname=%s, instance_id=%s, env=%s, arch=%s, ip=%s, tags=%v",
+		req.Hostname, req.InstanceID, req.Environment, req.Architecture, req.IPAddress, req.Tags)
 
 	// Create a unique key based on hostname and instance_id
 	clientKey := req.Hostname + "|" + req.InstanceID

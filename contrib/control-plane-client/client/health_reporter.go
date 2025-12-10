@@ -54,12 +54,15 @@ func (h *HealthReporter) Report(ctx context.Context, clientID string) error {
 
 	report := h.buildHealthReport(statuses, version)
 
+	h.logger.Info("sending health report to management API: client_id=%s, status=%s, policy_version=%s, policy_sha256=%s, tetragon_version=%s, policies_count=%d",
+		clientID, report.Status, report.PolicyVersion, report.PolicySha256, report.TetragonVersion, len(report.Policies))
+
 	if err := h.apiClient.ReportHealth(ctx, clientID, report); err != nil {
 		h.consecutiveErrors++
 		return cperrors.NewAPIError("failed to report health", 0, err)
 	}
 
-	h.logger.Debug("health report sent: status=%s, policies=%d", report.Status, len(report.Policies))
+	h.logger.Info("health report successfully sent: status=%s, policies=%d", report.Status, len(report.Policies))
 	h.consecutiveErrors = 0 // Reset on success
 	return nil
 }

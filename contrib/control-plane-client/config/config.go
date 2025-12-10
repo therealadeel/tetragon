@@ -66,8 +66,9 @@ type HealthReportingConfig struct {
 }
 
 type LoggingConfig struct {
-	Level  string `yaml:"level"`
-	Format string `yaml:"format"`
+	Level           string `yaml:"level"`
+	Format          string `yaml:"format"`
+	OutputDirectory string `yaml:"output_directory"` // Directory for log files (empty = stdout)
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -161,6 +162,9 @@ func (c *Config) SetDefaults() {
 	}
 	if c.Logging.Format == "" {
 		c.Logging.Format = "json"
+	}
+	if c.Logging.OutputDirectory == "" {
+		c.Logging.OutputDirectory = "/var/log/tetragon"
 	}
 }
 

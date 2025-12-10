@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -37,8 +38,11 @@ func NewControlPlaneClient(cfg *config.Config) (*ControlPlaneClient, error) {
 		return nil, cperrors.NewConfigError("invalid configuration", err)
 	}
 
-	// Create logger
-	log := logger.NewStandardLogger(cfg.Logging.Level)
+	// Create logger with file output support
+	log, logErr := logger.NewFileLogger(cfg.Logging.Level, cfg.Logging.Format, cfg.Logging.OutputDirectory)
+	if logErr != nil {
+		return nil, cperrors.NewConfigError("failed to create logger", logErr)
+	}
 
 	c := &ControlPlaneClient{
 		cfg:      cfg,
@@ -247,19 +251,15 @@ func (c *ControlPlaneClient) configReloadLoop(ctx context.Context) {
 	}
 }
 
-// reloadConfig reloads non-destructive configuration changes
+// reloadConfig reloads non-destructive configuration changes and handles log rotation
 func (c *ControlPlaneClient) reloadConfig() error {
-	// For now, only reload logging level (non-destructive)
-	// Future: could reload intervals, retry settings, etc.
-	c.logger.Info("configuration reload requested - updating log level to: %s", c.cfg.Logging.Level)
+	c.logger.Info("configuration reload requested - reopening log files for rotation...")
 
-	// Create new logger with updated level
-	newLogger := logger.NewStandardLogger(c.cfg.Logging.Level)
-	if c.clientID != "" {
-		newLogger = newLogger.WithField("client_id", c.clientID)
+	// Reopen log files (for logrotate support)
+	if err := c.logger.Reopen(); err != nil {
+		return fmt.Errorf("failed to reopen log files: %w", err)
 	}
-	c.logger = newLogger
 
-	c.logger.Info("log level updated successfully")
+	c.logger.Info("log files reopened successfully")
 	return nil
 }
