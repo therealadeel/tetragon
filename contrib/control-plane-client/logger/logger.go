@@ -47,16 +47,17 @@ func ParseLevel(level string) Level {
 }
 
 // standardLogger implements Logger using Go's standard log package
+// Uses immutable field maps for efficiency (copy-on-write)
 type standardLogger struct {
 	level  Level
-	fields map[string]interface{}
+	fields map[string]interface{} // Immutable after creation
 }
 
 // NewStandardLogger creates a new logger using the standard log package
 func NewStandardLogger(level string) Logger {
 	return &standardLogger{
 		level:  ParseLevel(level),
-		fields: make(map[string]interface{}),
+		fields: nil, // nil map to save allocation for loggers without fields
 	}
 }
 
@@ -103,7 +104,11 @@ func (l *standardLogger) Error(format string, args ...interface{}) {
 }
 
 func (l *standardLogger) WithField(key string, value interface{}) Logger {
-	newFields := make(map[string]interface{}, len(l.fields)+1)
+	// Optimize: pre-allocate exact size needed
+	capacity := len(l.fields) + 1
+	newFields := make(map[string]interface{}, capacity)
+
+	// Copy existing fields (no-op if l.fields is nil)
 	for k, v := range l.fields {
 		newFields[k] = v
 	}
@@ -111,21 +116,31 @@ func (l *standardLogger) WithField(key string, value interface{}) Logger {
 
 	return &standardLogger{
 		level:  l.level,
-		fields: newFields,
+		fields: newFields, // Immutable reference, never modified after creation
 	}
 }
 
 func (l *standardLogger) WithFields(fields map[string]interface{}) Logger {
-	newFields := make(map[string]interface{}, len(l.fields)+len(fields))
+	if len(fields) == 0 {
+		return l // No allocation needed if no fields to add
+	}
+
+	// Optimize: pre-allocate exact size needed
+	capacity := len(l.fields) + len(fields)
+	newFields := make(map[string]interface{}, capacity)
+
+	// Copy existing fields
 	for k, v := range l.fields {
 		newFields[k] = v
 	}
+
+	// Add new fields (overwrites existing keys)
 	for k, v := range fields {
 		newFields[k] = v
 	}
 
 	return &standardLogger{
 		level:  l.level,
-		fields: newFields,
+		fields: newFields, // Immutable reference
 	}
 }

@@ -94,6 +94,11 @@ func NewNetworkError(message string, err error) *ControlPlaneError {
 	return NewError(ErrorTypeNetwork, message, err)
 }
 
+// NewMetadataError creates a metadata-related error
+func NewMetadataError(message string, err error) *ControlPlaneError {
+	return NewError(ErrorTypeMetadata, message, err)
+}
+
 // IsRetryable determines if an error should be retried
 func IsRetryable(err error) bool {
 	var cpErr *ControlPlaneError

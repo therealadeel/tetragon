@@ -2,9 +2,9 @@ package client
 
 import (
 	"context"
-	"encoding/base64"
-	"fmt"
-	"strings"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/cilium/tetragon/contrib/control-plane-client/apiclient"
@@ -13,24 +13,25 @@ import (
 	cperrors "github.com/cilium/tetragon/contrib/control-plane-client/errors"
 	"github.com/cilium/tetragon/contrib/control-plane-client/logger"
 	"github.com/cilium/tetragon/contrib/control-plane-client/metadata"
-	"github.com/cilium/tetragon/contrib/control-plane-client/policy"
 	"github.com/cilium/tetragon/contrib/control-plane-client/tetragon"
-	"github.com/cilium/tetragon/contrib/control-plane-client/types"
 )
 
+// ControlPlaneClient orchestrates the various managers
 type ControlPlaneClient struct {
-	cfg               *config.Config
-	cache             *cache.Cache
-	apiClient         *apiclient.Client
-	tetragonClient    *tetragon.Client
-	metadataCollector *metadata.Collector
-	clientID          string
-	policyVersion     string
-	policySha256      string
-	stopCh            chan struct{}
-	logger            logger.Logger
+	cfg                 *config.Config
+	cache               *cache.Cache
+	apiClient           apiclient.ClientInterface
+	tetragonClient      tetragon.ClientInterface
+	registrationManager *RegistrationManager
+	policySyncManager   *PolicySyncManager
+	healthReporter      *HealthReporter
+	clientID            string
+	stopCh              chan struct{}
+	reloadCh            chan os.Signal
+	logger              logger.Logger
 }
 
+// NewControlPlaneClient creates a new control plane client
 func NewControlPlaneClient(cfg *config.Config) (*ControlPlaneClient, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, cperrors.NewConfigError("invalid configuration", err)
@@ -40,10 +41,14 @@ func NewControlPlaneClient(cfg *config.Config) (*ControlPlaneClient, error) {
 	log := logger.NewStandardLogger(cfg.Logging.Level)
 
 	c := &ControlPlaneClient{
-		cfg:    cfg,
-		stopCh: make(chan struct{}),
-		logger: log,
+		cfg:      cfg,
+		stopCh:   make(chan struct{}),
+		reloadCh: make(chan os.Signal, 1),
+		logger:   log,
 	}
+
+	// Setup signal handler for configuration reload (SIGHUP)
+	signal.Notify(c.reloadCh, syscall.SIGHUP)
 
 	c.cache = cache.NewCache()
 	c.apiClient = apiclient.NewClient(cfg.ManagementAPI, log)
@@ -54,338 +59,207 @@ func NewControlPlaneClient(cfg *config.Config) (*ControlPlaneClient, error) {
 		return nil, cperrors.NewTetragonError("failed to create Tetragon client", err)
 	}
 
-	c.metadataCollector = metadata.NewCollector(cfg.Registration.UseIMDS, cfg.Registration.IMDSTimeout)
+	metadataCollector := metadata.NewCollector(cfg.Registration.UseIMDS, cfg.Registration.IMDSTimeout)
+
+	// Create managers with their specific configs
+	c.registrationManager = NewRegistrationManager(
+		c.apiClient,
+		c.cache,
+		metadataCollector,
+		log,
+		RegistrationConfig{
+			Environment:    cfg.Registration.Environment,
+			DeploymentType: cfg.Registration.DeploymentType,
+			Tags:           cfg.Registration.Tags,
+		},
+	)
+
+	c.policySyncManager = NewPolicySyncManager(
+		c.apiClient,
+		c.tetragonClient,
+		c.cache,
+		log,
+		PolicySyncConfig{
+			Incremental:     cfg.PolicySync.Incremental,
+			CleanupExisting: cfg.PolicySync.CleanupExisting,
+		},
+	)
+
+	c.healthReporter = NewHealthReporter(
+		c.apiClient,
+		c.tetragonClient,
+		c.cache,
+		log,
+	)
 
 	return c, nil
 }
 
+// Start starts the control plane client
 func (c *ControlPlaneClient) Start(ctx context.Context) error {
-	c.logger.Info("Starting control plane client...")
+	c.logger.Info("starting control plane client...")
 
 	if err := c.tetragonClient.Connect(ctx); err != nil {
-		return fmt.Errorf("failed to connect to Tetragon: %w", err)
+		return cperrors.NewTetragonError("failed to connect to Tetragon", err)
 	}
 	defer c.tetragonClient.Close()
 
-	if err := c.register(ctx); err != nil {
-		return fmt.Errorf("failed to register with management API: %w", err)
+	// Register with management API
+	clientID, err := c.registrationManager.Register(ctx)
+	if err != nil {
+		return err
 	}
+	c.clientID = clientID
+
+	// Update logger with client ID for better tracing
+	c.logger = c.logger.WithField("client_id", c.clientID)
+	c.logger.Info("client registered and ready")
 
 	// Cleanup existing policies on startup if configured
 	if c.cfg.PolicySync.CleanupExisting {
-		c.logger.Info("Cleaning up existing policies...")
-		if err := c.tetragonClient.DeleteAllPolicies(ctx); err != nil {
-			c.logger.Warn("Failed to cleanup existing policies: %v", err)
-		} else {
-			c.logger.Info("Successfully cleaned up existing policies")
+		if err := c.policySyncManager.CleanupExisting(ctx); err != nil {
+			c.logger.Warn("failed to cleanup existing policies: %v", err)
 		}
 	}
 
-	if err := c.syncPolicies(ctx); err != nil {
-		c.logger.Warn("Initial policy sync failed: %v", err)
+	// Initial policy sync
+	if err := c.policySyncManager.Sync(ctx, c.clientID); err != nil {
+		c.logger.Warn("initial policy sync failed: %v", err)
 	}
 
+	// Start background loops
 	go c.policySyncLoop(ctx)
 	go c.healthReportingLoop(ctx)
+	go c.configReloadLoop(ctx)
 
+	// Wait for shutdown signal
 	<-ctx.Done()
 	close(c.stopCh)
-	c.logger.Info("Control plane client shutting down...")
+	c.logger.Info("control plane client shutting down...")
 
 	return nil
 }
 
-func (c *ControlPlaneClient) register(ctx context.Context) error {
-	clientID, err := c.cache.GetClientID()
-	if err == nil && clientID != "" {
-		c.clientID = clientID
-		c.logger.Info("Using cached client ID: %s", c.clientID)
-		return nil
-	}
-
-	c.logger.Info("Registering with management API...")
-	c.logger.Debug("[client] Starting registration with retry logic")
-
-	hostname, _ := c.metadataCollector.GetHostname()
-	instanceID, _ := c.metadataCollector.GetInstanceID(ctx)
-	ipAddress, _ := c.metadataCollector.GetIPAddress()
-
-	c.logger.Debug("[client] Registration metadata: hostname=%s, instance_id=%s, ip=%s, env=%s, arch=%s, tags=%v",
-		hostname, instanceID, ipAddress, c.cfg.Registration.Environment,
-		c.metadataCollector.GetArchitecture(), c.cfg.Registration.Tags)
-
-	req := types.RegistrationRequest{
-		Hostname:       hostname,
-		InstanceID:     instanceID,
-		Environment:    c.cfg.Registration.Environment,
-		Architecture:   c.metadataCollector.GetArchitecture(),
-		IPAddress:      ipAddress,
-		DeploymentType: c.cfg.Registration.DeploymentType,
-		Tags:           c.cfg.Registration.Tags,
-	}
-
-	resp, err := c.apiClient.Register(ctx, req)
-	if err != nil {
-		return fmt.Errorf("registration failed: %w", err)
-	}
-
-	c.logger.Debug("[client] Registration successful, received client ID: %s", resp.ClientID)
-
-	c.clientID = resp.ClientID
-	if err := c.cache.SetClientID(c.clientID); err != nil {
-		c.logger.Warn("Failed to cache client ID: %v", err)
-	}
-
-	c.logger.Info("Successfully registered with client ID: %s", c.clientID)
-	return nil
-}
-
-func (c *ControlPlaneClient) syncPolicies(ctx context.Context) error {
-	c.logger.Info("Syncing policies...")
-	c.logger.Debug("[client] Starting policy sync with retry logic")
-
-	resp, err := c.apiClient.GetPolicies(ctx, c.clientID)
-	if err != nil {
-		return fmt.Errorf("failed to get policies: %w", err)
-	}
-
-	if resp.Version == c.policyVersion && resp.Sha256 == c.policySha256 {
-		c.logger.Info("Policies already at version %s (sha256: %s), no update needed", c.policyVersion, c.policySha256)
-		return nil
-	}
-
-	c.logger.Info("Applying new policy version %s (previous: %s)", resp.Version, c.policyVersion)
-
-	if err := c.applyPolicies(ctx, resp); err != nil {
-		return err
-	}
-
-	c.updatePolicyState(resp)
-	c.logger.Info("Successfully applied policy version %s (sha256: %s)", c.policyVersion, c.policySha256)
-	return nil
-}
-
-func (c *ControlPlaneClient) applyPolicies(ctx context.Context, resp *types.PoliciesResponse) error {
-	// Use incremental updates if configured
-	if c.cfg.PolicySync.Incremental {
-		return c.applyPoliciesIncremental(ctx, resp)
-	}
-
-	// Fall back to delete-all approach
-	if err := c.tetragonClient.DeleteAllPolicies(ctx); err != nil {
-		return fmt.Errorf("failed to delete existing policies: %w", err)
-	}
-
-	if err := c.tetragonClient.ApplyPoliciesFromBase64(ctx, resp.Policies); err != nil {
-		return fmt.Errorf("failed to apply new policies: %w", err)
-	}
-
-	return nil
-}
-
-func (c *ControlPlaneClient) applyPoliciesIncremental(ctx context.Context, resp *types.PoliciesResponse) error {
-	c.logger.Debug("Using incremental policy updates")
-
-	// Decode base64 policies
-	yamlBytes, err := base64.StdEncoding.DecodeString(resp.Policies)
-	if err != nil {
-		return fmt.Errorf("failed to decode base64 policies: %w", err)
-	}
-
-	// Parse desired policies
-	desired, err := policy.ParsePolicies(string(yamlBytes))
-	if err != nil {
-		return fmt.Errorf("failed to parse policies: %w", err)
-	}
-
-	// Get current policy inventory from cache
-	current := c.cache.GetPolicyInventory()
-
-	// Compute diff
-	diff := policy.ComputeDiff(current, desired)
-	c.logger.Info("Policy diff: %s", diff.Summary())
-
-	if diff.IsEmpty() {
-		c.logger.Debug("No policy changes detected")
-		return nil
-	}
-
-	// Apply diff
-	if err := c.applyPolicyDiff(ctx, diff); err != nil {
-		return err
-	}
-
-	// Update inventory cache
-	newInventory := make(map[string]policy.Metadata)
-	for _, doc := range desired {
-		newInventory[doc.Key()] = policy.Metadata{
-			Name:      doc.Name,
-			Namespace: doc.Namespace,
-			Hash:      doc.Hash,
-		}
-	}
-	if err := c.cache.SetPolicyInventory(newInventory); err != nil {
-		c.logger.Warn("Failed to cache policy inventory: %v", err)
-	}
-
-	return nil
-}
-
-func (c *ControlPlaneClient) applyPolicyDiff(ctx context.Context, diff *policy.Diff) error {
-	var errors []string
-
-	// Delete removed policies first
-	for _, policyKey := range diff.ToDelete {
-		c.logger.Info("Deleting policy: %s", policyKey)
-
-		// Parse namespace/name from key
-		parts := strings.Split(policyKey, "/")
-		var name, namespace string
-		if len(parts) == 2 {
-			namespace = parts[0]
-			name = parts[1]
-		} else {
-			name = policyKey
-		}
-
-		if err := c.tetragonClient.DeletePolicy(ctx, name, namespace); err != nil {
-			errors = append(errors, fmt.Sprintf("delete %s: %v", policyKey, err))
-		}
-	}
-
-	// Update changed policies (delete old + add new)
-	for _, doc := range diff.ToUpdate {
-		c.logger.Info("Updating policy: %s", doc.Key())
-
-		// Delete old version
-		if err := c.tetragonClient.DeletePolicy(ctx, doc.Name, doc.Namespace); err != nil {
-			c.logger.Warn("Failed to delete old version of %s: %v", doc.Key(), err)
-		}
-
-		// Add new version
-		if err := c.tetragonClient.AddPolicy(ctx, doc.Content); err != nil {
-			errors = append(errors, fmt.Sprintf("update %s: %v", doc.Key(), err))
-		}
-	}
-
-	// Add new policies
-	for _, doc := range diff.ToAdd {
-		c.logger.Info("Adding policy: %s", doc.Key())
-
-		if err := c.tetragonClient.AddPolicy(ctx, doc.Content); err != nil {
-			errors = append(errors, fmt.Sprintf("add %s: %v", doc.Key(), err))
-		}
-	}
-
-	if len(errors) > 0 {
-		return fmt.Errorf("failed to apply policy changes: %s", strings.Join(errors, "; "))
-	}
-
-	return nil
-}
-
-func (c *ControlPlaneClient) updatePolicyState(resp *types.PoliciesResponse) {
-	c.policyVersion = resp.Version
-	if err := c.cache.SetPolicyVersion(c.policyVersion); err != nil {
-		c.logger.Warn("Failed to cache policy version: %v", err)
-	}
-
-	c.policySha256 = resp.Sha256
-	if err := c.cache.SetPolicySha256(c.policySha256); err != nil {
-		c.logger.Warn("Failed to cache policy sha256: %v", err)
-	}
-}
-
-func (c *ControlPlaneClient) reportHealth(ctx context.Context) error {
-	statuses, err := c.tetragonClient.GetPolicyStatuses(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get policy statuses: %w", err)
-	}
-
-	tetragonVersion := c.getTetragonVersion(ctx)
-	report := c.buildHealthReport(statuses, tetragonVersion)
-
-	c.logger.Info("Reporting health: status=%s, policy_version=%s, tetragon_version=%s, policies=%d",
-		report.Status, report.PolicyVersion, report.TetragonVersion, len(report.Policies))
-
-	c.logger.Debug("[client] Starting health report with retry logic")
-
-	return c.apiClient.ReportHealth(ctx, c.clientID, report)
-}
-
-func (c *ControlPlaneClient) getTetragonVersion(ctx context.Context) string {
-	tetragonVersion, err := c.tetragonClient.GetVersion(ctx)
-	if err != nil {
-		c.logger.Warn("Failed to get Tetragon version: %v", err)
-		return "unknown"
-	}
-	return tetragonVersion
-}
-
-func (c *ControlPlaneClient) buildHealthReport(statuses []types.PolicyStatus, tetragonVersion string) types.HealthReport {
-	report := types.HealthReport{
-		Timestamp:       time.Now(),
-		Status:          "healthy",
-		PolicyVersion:   c.policyVersion,
-		PolicySha256:    c.policySha256,
-		TetragonVersion: tetragonVersion,
-		Policies:        statuses,
-	}
-
-	for i, status := range statuses {
-		c.logger.Debug("Policy %d: name=%s, state=%s, error=%s", i, status.Name, status.State, status.Error)
-		if status.State != "TP_STATE_ENABLED" {
-			c.logger.Warn("Policy %s state is %s (not TP_STATE_ENABLED), marking as degraded", status.Name, status.State)
-			report.Status = "degraded"
-			break
-		}
-	}
-
-	return report
-}
-
+// policySyncLoop periodically syncs policies
 func (c *ControlPlaneClient) policySyncLoop(ctx context.Context) {
-	ticker := time.NewTicker(c.cfg.PolicySync.Interval)
+	// Add initial jitter to prevent thundering herd
+	initialInterval := addJitter(c.cfg.PolicySync.Interval)
+	c.logger.Debug("policy sync interval with jitter: %v (base: %v)", initialInterval, c.cfg.PolicySync.Interval)
+
+	ticker := time.NewTicker(initialInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			c.logger.Info("Policy sync loop stopping due to context cancellation")
+			c.logger.Info("policy sync loop stopping due to context cancellation")
 			return
 		case <-c.stopCh:
-			c.logger.Info("Policy sync loop stopping due to stop signal")
+			c.logger.Info("policy sync loop stopping due to stop signal")
 			return
 		case <-ticker.C:
 			// Create a timeout context for this sync operation
 			syncCtx, cancel := context.WithTimeout(ctx, c.cfg.ManagementAPI.Timeout*2)
-			if err := c.syncPolicies(syncCtx); err != nil {
-				c.logger.Error("Policy sync error: %v", err)
+
+			if err := c.policySyncManager.Sync(syncCtx, c.clientID); err != nil {
+				c.logger.Error("policy sync error: %v", err)
+
+				// Apply backpressure based on consecutive errors
+				consecutiveErrors := c.policySyncManager.GetConsecutiveErrors()
+				if consecutiveErrors > 0 {
+					backoff := calculateBackoffDuration(consecutiveErrors, c.cfg.PolicySync.Interval)
+					c.logger.Warn("backing off due to %d consecutive errors, additional delay: %v",
+						consecutiveErrors, backoff)
+
+					// Reset ticker with backoff
+					ticker.Reset(c.cfg.PolicySync.Interval + backoff)
+				}
+			} else {
+				// Reset to normal interval with jitter on success
+				ticker.Reset(addJitter(c.cfg.PolicySync.Interval))
 			}
+
 			cancel()
 		}
 	}
 }
 
+// healthReportingLoop periodically reports health
 func (c *ControlPlaneClient) healthReportingLoop(ctx context.Context) {
-	ticker := time.NewTicker(c.cfg.HealthReporting.Interval)
+	// Add initial jitter to prevent thundering herd
+	initialInterval := addJitter(c.cfg.HealthReporting.Interval)
+	c.logger.Debug("health reporting interval with jitter: %v (base: %v)", initialInterval, c.cfg.HealthReporting.Interval)
+
+	ticker := time.NewTicker(initialInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			c.logger.Info("Health reporting loop stopping due to context cancellation")
+			c.logger.Info("health reporting loop stopping due to context cancellation")
 			return
 		case <-c.stopCh:
-			c.logger.Info("Health reporting loop stopping due to stop signal")
+			c.logger.Info("health reporting loop stopping due to stop signal")
 			return
 		case <-ticker.C:
 			// Create a timeout context for this health report operation
 			healthCtx, cancel := context.WithTimeout(ctx, c.cfg.ManagementAPI.Timeout)
-			if err := c.reportHealth(healthCtx); err != nil {
-				c.logger.Error("Health reporting error: %v", err)
+
+			if err := c.healthReporter.Report(healthCtx, c.clientID); err != nil {
+				c.logger.Error("health reporting error: %v", err)
+
+				// Apply backpressure based on consecutive errors
+				consecutiveErrors := c.healthReporter.GetConsecutiveErrors()
+				if consecutiveErrors > 0 {
+					backoff := calculateBackoffDuration(consecutiveErrors, c.cfg.HealthReporting.Interval)
+					c.logger.Warn("backing off due to %d consecutive errors, additional delay: %v",
+						consecutiveErrors, backoff)
+
+					// Reset ticker with backoff
+					ticker.Reset(c.cfg.HealthReporting.Interval + backoff)
+				}
+			} else {
+				// Reset to normal interval with jitter on success
+				ticker.Reset(addJitter(c.cfg.HealthReporting.Interval))
 			}
+
 			cancel()
 		}
 	}
+}
+
+// configReloadLoop handles configuration reload signals
+func (c *ControlPlaneClient) configReloadLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.stopCh:
+			return
+		case <-c.reloadCh:
+			c.logger.Info("received SIGHUP, reloading configuration...")
+			if err := c.reloadConfig(); err != nil {
+				c.logger.Error("failed to reload configuration: %v", err)
+			} else {
+				c.logger.Info("configuration reloaded successfully")
+			}
+		}
+	}
+}
+
+// reloadConfig reloads non-destructive configuration changes
+func (c *ControlPlaneClient) reloadConfig() error {
+	// For now, only reload logging level (non-destructive)
+	// Future: could reload intervals, retry settings, etc.
+	c.logger.Info("configuration reload requested - updating log level to: %s", c.cfg.Logging.Level)
+
+	// Create new logger with updated level
+	newLogger := logger.NewStandardLogger(c.cfg.Logging.Level)
+	if c.clientID != "" {
+		newLogger = newLogger.WithField("client_id", c.clientID)
+	}
+	c.logger = newLogger
+
+	c.logger.Info("log level updated successfully")
+	return nil
 }
