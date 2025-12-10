@@ -32,6 +32,7 @@ policy_sync:
   enabled: true
   interval: "60s"  # How often to check for policy updates
   cleanup_existing: true  # Remove existing policies on startup
+  incremental: true  # Use incremental updates (only add/update/delete changed policies)
 
 # Health reporting settings
 health_reporting:

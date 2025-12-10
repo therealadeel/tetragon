@@ -14,7 +14,8 @@ The control plane client connects to a management REST API to:
 
 - **Automatic Registration**: Registers on startup with hostname, instance ID (from IMDSv2 or hostid), environment, architecture, IP address, and custom tags
 - **Policy Synchronization**: Periodically fetches policies from the management API and applies them to Tetragon
-- **Version-based Updates**: Only updates policies when the version changes
+- **Incremental Updates**: Efficiently applies only changed policies (add/update/delete) instead of replacing all policies
+- **Version-based Updates**: Only updates policies when the version or SHA256 hash changes
 - **Health Reporting**: Regularly sends client health and policy status to the management API
 - **Retry Logic**: Built-in exponential backoff for resilient API communication
 - **Configurable**: Extensive configuration options for all client behaviors
@@ -80,6 +81,7 @@ policy_sync:
   enabled: true
   interval: "60s"  # How often to check for policy updates
   cleanup_existing: true  # Remove existing policies on startup
+  incremental: true  # Use incremental updates (default: true)
 
 # Health reporting settings
 health_reporting:

@@ -2,14 +2,17 @@ package client
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/cilium/tetragon/contrib/control-plane-client/apiclient"
 	"github.com/cilium/tetragon/contrib/control-plane-client/cache"
 	"github.com/cilium/tetragon/contrib/control-plane-client/config"
 	"github.com/cilium/tetragon/contrib/control-plane-client/metadata"
+	"github.com/cilium/tetragon/contrib/control-plane-client/policy"
 	"github.com/cilium/tetragon/contrib/control-plane-client/retry"
 	"github.com/cilium/tetragon/contrib/control-plane-client/tetragon"
 	"github.com/cilium/tetragon/contrib/control-plane-client/types"
@@ -161,8 +164,8 @@ func (c *ControlPlaneClient) syncPolicies(ctx context.Context) error {
 		return fmt.Errorf("failed to get policies: %w", err)
 	}
 
-	if resp.Version == c.policyVersion {
-		c.logger.info("Policies already at version %s, no update needed", c.policyVersion)
+	if resp.Version == c.policyVersion && resp.Sha256 == c.policySha256 {
+		c.logger.info("Policies already at version %s (sha256: %s), no update needed", c.policyVersion, c.policySha256)
 		return nil
 	}
 
@@ -178,12 +181,119 @@ func (c *ControlPlaneClient) syncPolicies(ctx context.Context) error {
 }
 
 func (c *ControlPlaneClient) applyPolicies(ctx context.Context, resp *types.PoliciesResponse) error {
+	// Use incremental updates if configured
+	if c.cfg.PolicySync.Incremental {
+		return c.applyPoliciesIncremental(ctx, resp)
+	}
+
+	// Fall back to delete-all approach
 	if err := c.tetragonClient.DeleteAllPolicies(ctx); err != nil {
 		return fmt.Errorf("failed to delete existing policies: %w", err)
 	}
 
 	if err := c.tetragonClient.ApplyPoliciesFromBase64(ctx, resp.Policies); err != nil {
 		return fmt.Errorf("failed to apply new policies: %w", err)
+	}
+
+	return nil
+}
+
+func (c *ControlPlaneClient) applyPoliciesIncremental(ctx context.Context, resp *types.PoliciesResponse) error {
+	c.logger.debug("Using incremental policy updates")
+
+	// Decode base64 policies
+	yamlBytes, err := base64.StdEncoding.DecodeString(resp.Policies)
+	if err != nil {
+		return fmt.Errorf("failed to decode base64 policies: %w", err)
+	}
+
+	// Parse desired policies
+	desired, err := policy.ParsePolicies(string(yamlBytes))
+	if err != nil {
+		return fmt.Errorf("failed to parse policies: %w", err)
+	}
+
+	// Get current policy inventory from cache
+	current := c.cache.GetPolicyInventory()
+
+	// Compute diff
+	diff := policy.ComputeDiff(current, desired)
+	c.logger.info("Policy diff: %s", diff.Summary())
+
+	if diff.IsEmpty() {
+		c.logger.debug("No policy changes detected")
+		return nil
+	}
+
+	// Apply diff
+	if err := c.applyPolicyDiff(ctx, diff); err != nil {
+		return err
+	}
+
+	// Update inventory cache
+	newInventory := make(map[string]policy.Metadata)
+	for _, doc := range desired {
+		newInventory[doc.Key()] = policy.Metadata{
+			Name:      doc.Name,
+			Namespace: doc.Namespace,
+			Hash:      doc.Hash,
+		}
+	}
+	if err := c.cache.SetPolicyInventory(newInventory); err != nil {
+		c.logger.warn("Failed to cache policy inventory: %v", err)
+	}
+
+	return nil
+}
+
+func (c *ControlPlaneClient) applyPolicyDiff(ctx context.Context, diff *policy.Diff) error {
+	var errors []string
+
+	// Delete removed policies first
+	for _, policyKey := range diff.ToDelete {
+		c.logger.info("Deleting policy: %s", policyKey)
+
+		// Parse namespace/name from key
+		parts := strings.Split(policyKey, "/")
+		var name, namespace string
+		if len(parts) == 2 {
+			namespace = parts[0]
+			name = parts[1]
+		} else {
+			name = policyKey
+		}
+
+		if err := c.tetragonClient.DeletePolicy(ctx, name, namespace); err != nil {
+			errors = append(errors, fmt.Sprintf("delete %s: %v", policyKey, err))
+		}
+	}
+
+	// Update changed policies (delete old + add new)
+	for _, doc := range diff.ToUpdate {
+		c.logger.info("Updating policy: %s", doc.Key())
+
+		// Delete old version
+		if err := c.tetragonClient.DeletePolicy(ctx, doc.Name, doc.Namespace); err != nil {
+			c.logger.warn("Failed to delete old version of %s: %v", doc.Key(), err)
+		}
+
+		// Add new version
+		if err := c.tetragonClient.AddPolicy(ctx, doc.Content); err != nil {
+			errors = append(errors, fmt.Sprintf("update %s: %v", doc.Key(), err))
+		}
+	}
+
+	// Add new policies
+	for _, doc := range diff.ToAdd {
+		c.logger.info("Adding policy: %s", doc.Key())
+
+		if err := c.tetragonClient.AddPolicy(ctx, doc.Content); err != nil {
+			errors = append(errors, fmt.Sprintf("add %s: %v", doc.Key(), err))
+		}
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("failed to apply policy changes: %s", strings.Join(errors, "; "))
 	}
 
 	return nil

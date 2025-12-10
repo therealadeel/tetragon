@@ -2,13 +2,16 @@ package cache
 
 import (
 	"sync"
+
+	"github.com/cilium/tetragon/contrib/control-plane-client/policy"
 )
 
 type Cache struct {
-	mu            sync.RWMutex
-	clientID      string
-	policyVersion string
-	policySha256  string
+	mu              sync.RWMutex
+	clientID        string
+	policyVersion   string
+	policySha256    string
+	policyInventory map[string]policy.Metadata // key -> metadata
 }
 
 func NewCache() *Cache {
@@ -60,5 +63,27 @@ func (c *Cache) Clear() error {
 	c.clientID = ""
 	c.policyVersion = ""
 	c.policySha256 = ""
+	c.policyInventory = nil
+	return nil
+}
+
+func (c *Cache) GetPolicyInventory() map[string]policy.Metadata {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	// Return a copy to avoid race conditions
+	inventory := make(map[string]policy.Metadata, len(c.policyInventory))
+	for k, v := range c.policyInventory {
+		inventory[k] = v
+	}
+	return inventory
+}
+
+func (c *Cache) SetPolicyInventory(inventory map[string]policy.Metadata) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.policyInventory = make(map[string]policy.Metadata, len(inventory))
+	for k, v := range inventory {
+		c.policyInventory[k] = v
+	}
 	return nil
 }

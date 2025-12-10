@@ -48,6 +48,7 @@ type PolicySyncConfig struct {
 	Enabled         bool          `yaml:"enabled"`
 	Interval        time.Duration `yaml:"interval"`
 	CleanupExisting bool          `yaml:"cleanup_existing"`
+	Incremental     bool          `yaml:"incremental"` // Use incremental updates instead of delete-all
 }
 
 type HealthReportingConfig struct {
@@ -121,6 +122,10 @@ func (c *Config) SetDefaults() {
 
 	if c.PolicySync.Interval == 0 {
 		c.PolicySync.Interval = 60 * time.Second
+	}
+	// Incremental updates enabled by default
+	if !c.PolicySync.Incremental {
+		c.PolicySync.Incremental = true
 	}
 
 	if c.HealthReporting.Interval == 0 {
