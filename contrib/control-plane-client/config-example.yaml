@@ -1,0 +1,44 @@
+# Example configuration for Tetragon Control Plane Client
+
+# Management API configuration
+management_api:
+  base_url: "https://api.example.com/v1"
+  auth_token: ""  # Or set via TETRAGON_CONTROL_PLANE_AUTH_TOKEN env var (recommended for security)
+  timeout: "30s"
+  retry:
+    max_attempts: 5
+    initial_backoff: "1s"
+    max_backoff: "60s"
+    backoff_multiplier: 2.0
+    retryable_http_codes: [408, 429, 500, 502, 503, 504]
+
+# Tetragon gRPC configuration
+tetragon:
+  server_address: "localhost:54321"
+  timeout: "30s"
+
+# Client registration settings
+registration:
+  environment: "production"  # dev, stage, live, production
+  tags:
+    - "region:us-west-2"
+    - "team:security"
+    - "datacenter:dc1"
+  use_imds: true  # Try to get instance_id from IMDSv2
+  imds_timeout: "5s"
+
+# Policy synchronization settings
+policy_sync:
+  enabled: true
+  interval: "60s"  # How often to check for policy updates
+  cleanup_existing: true  # Remove existing policies on startup
+
+# Health reporting settings
+health_reporting:
+  enabled: true
+  interval: "70s"  # How often to report health
+
+# Logging
+logging:
+  level: "info"  # debug, info, warn, error
+  format: "text"  # json, text
