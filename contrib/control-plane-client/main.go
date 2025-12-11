@@ -31,15 +31,16 @@ func (a *arrayFlags) Set(value string) error {
 
 // cliOptions holds command-line flag values
 type cliOptions struct {
-	configFile         string
-	managementAPIURL   string
-	tetragonAddress    string
-	environment        string
-	tags               arrayFlags
-	logLevel           string
-	logFormat          string
-	logOutputDirectory string
-	showVersion        bool
+	configFile            string
+	managementAPIURL      string
+	tetragonAddress       string
+	environment           string
+	tags                  arrayFlags
+	logLevel              string
+	logFormat             string
+	logOutputDirectory    string
+	insecureSkipTLSVerify bool
+	showVersion           bool
 }
 
 func main() {
@@ -79,6 +80,7 @@ func parseFlags() *cliOptions {
 	flag.StringVar(&opts.logLevel, "log-level", "", "Log level: debug, info, warn, error (overrides config)")
 	flag.StringVar(&opts.logFormat, "log-format", "", "Log format: text, json (overrides config)")
 	flag.StringVar(&opts.logOutputDirectory, "log-output-directory", "", "Directory for log files, empty for stdout (overrides config)")
+	flag.BoolVar(&opts.insecureSkipTLSVerify, "insecure-skip-tls-verify", false, "Skip TLS certificate verification (INSECURE, for testing only)")
 	flag.BoolVar(&opts.showVersion, "version", false, "Show version information")
 
 	flag.Parse()
@@ -159,6 +161,11 @@ func loadConfigWithOverrides(opts *cliOptions) (*config.Config, error) {
 
 	if opts.logOutputDirectory != "" {
 		cfg.Logging.OutputDirectory = opts.logOutputDirectory
+	}
+
+	// Apply TLS override if flag is set
+	if opts.insecureSkipTLSVerify {
+		cfg.ManagementAPI.HTTPClient.InsecureSkipTLSVerify = true
 	}
 
 	if err := cfg.Validate(); err != nil {

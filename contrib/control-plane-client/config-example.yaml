@@ -11,6 +11,8 @@ management_api:
     max_backoff: "60s"
     backoff_multiplier: 2.0
     retryable_http_codes: [408, 429, 500, 502, 503, 504]
+  http_client:
+    insecure_skip_tls_verify: false  # INSECURE: Skip TLS certificate verification (for testing/development only)
 
 # Tetragon gRPC configuration
 tetragon:
@@ -19,12 +21,13 @@ tetragon:
 
 # Client registration settings
 registration:
-  environment: "production"  # dev, stage, live, production
+  environment: "dev"  # dev, stage, live, production
   deployment_type: "standalone"  # standalone or kubernetes
   tags:
     - "region:us-west-2"
     - "team:security"
     - "datacenter:dc1"
+    - "dev"
   use_imds: true  # Try to get instance_id from IMDSv2
   imds_timeout: "5s"
 

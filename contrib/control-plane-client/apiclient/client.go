@@ -3,6 +3,7 @@ package apiclient
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,6 +39,9 @@ func NewClientWithHTTPClient(cfg config.ManagementAPIConfig, log logger.Logger, 
 			MaxIdleConnsPerHost: cfg.HTTPClient.MaxIdleConnsPerHost,
 			IdleConnTimeout:     cfg.HTTPClient.IdleConnTimeout,
 			TLSHandshakeTimeout: cfg.HTTPClient.TLSHandshakeTimeout,
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: cfg.HTTPClient.InsecureSkipTLSVerify,
+			},
 			DialContext: (&net.Dialer{
 				Timeout:   30 * time.Second,
 				KeepAlive: 30 * time.Second,

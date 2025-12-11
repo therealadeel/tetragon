@@ -26,10 +26,11 @@ type ManagementAPIConfig struct {
 }
 
 type HTTPClientConfig struct {
-	MaxIdleConns        int           `yaml:"max_idle_conns"`
-	MaxIdleConnsPerHost int           `yaml:"max_idle_conns_per_host"`
-	IdleConnTimeout     time.Duration `yaml:"idle_conn_timeout"`
-	TLSHandshakeTimeout time.Duration `yaml:"tls_handshake_timeout"`
+	MaxIdleConns          int           `yaml:"max_idle_conns"`
+	MaxIdleConnsPerHost   int           `yaml:"max_idle_conns_per_host"`
+	IdleConnTimeout       time.Duration `yaml:"idle_conn_timeout"`
+	TLSHandshakeTimeout   time.Duration `yaml:"tls_handshake_timeout"`
+	InsecureSkipTLSVerify bool          `yaml:"insecure_skip_tls_verify"` // Skip TLS certificate verification (insecure, for testing only)
 }
 
 type RetryConfig struct {
