@@ -39,6 +39,7 @@ type cliOptions struct {
 	logLevel              string
 	logFormat             string
 	logOutputDirectory    string
+	logOutputDirectorySet bool // Track if flag was explicitly set
 	insecureSkipTLSVerify bool
 	showVersion           bool
 }
@@ -79,7 +80,11 @@ func parseFlags() *cliOptions {
 	flag.Var(&opts.tags, "tag", "Additional tags (can be specified multiple times, overrides config)")
 	flag.StringVar(&opts.logLevel, "log-level", "", "Log level: debug, info, warn, error (overrides config)")
 	flag.StringVar(&opts.logFormat, "log-format", "", "Log format: text, json (overrides config)")
-	flag.StringVar(&opts.logOutputDirectory, "log-output-directory", "", "Directory for log files, empty for stdout (overrides config)")
+	flag.Func("log-output-directory", "Directory for log files, empty for stdout (overrides config)", func(s string) error {
+		opts.logOutputDirectory = s
+		opts.logOutputDirectorySet = true
+		return nil
+	})
 	flag.BoolVar(&opts.insecureSkipTLSVerify, "insecure-skip-tls-verify", false, "Skip TLS certificate verification (INSECURE, for testing only)")
 	flag.BoolVar(&opts.showVersion, "version", false, "Show version information")
 
@@ -159,7 +164,8 @@ func loadConfigWithOverrides(opts *cliOptions) (*config.Config, error) {
 		cfg.Logging.Format = opts.logFormat
 	}
 
-	if opts.logOutputDirectory != "" {
+	// Apply log output directory if flag was explicitly set (even if empty string)
+	if opts.logOutputDirectorySet {
 		cfg.Logging.OutputDirectory = opts.logOutputDirectory
 	}
 
