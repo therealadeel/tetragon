@@ -7,11 +7,11 @@ import (
 )
 
 type Cache struct {
-	mu              sync.RWMutex
-	clientID        string
-	policyVersion   string
-	policySha256    string
-	policyInventory map[string]policy.Metadata // key -> metadata
+	mu                sync.RWMutex
+	clientID          string
+	policyDisplayName string
+	policySha256      string
+	policyInventory   map[string]policy.Metadata // key -> metadata
 }
 
 func NewCache() *Cache {
@@ -30,16 +30,16 @@ func (c *Cache) SetClientID(clientID string) {
 	c.clientID = clientID
 }
 
-func (c *Cache) GetPolicyVersion() string {
+func (c *Cache) GetPolicyDisplayName() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.policyVersion
+	return c.policyDisplayName
 }
 
-func (c *Cache) SetPolicyVersion(version string) {
+func (c *Cache) SetPolicyDisplayName(displayName string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.policyVersion = version
+	c.policyDisplayName = displayName
 }
 
 func (c *Cache) GetPolicySha256() string {
@@ -58,7 +58,7 @@ func (c *Cache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.clientID = ""
-	c.policyVersion = ""
+	c.policyDisplayName = ""
 	c.policySha256 = ""
 	c.policyInventory = nil
 }

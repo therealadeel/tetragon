@@ -54,8 +54,8 @@ func (h *HealthReporter) Report(ctx context.Context, clientID string) error {
 
 	report := h.buildHealthReport(statuses, version)
 
-	h.logger.Info("sending health report to management API: client_id=%s, status=%s, policy_version=%s, policy_sha256=%s, tetragon_version=%s, policies_count=%d",
-		clientID, report.Status, report.PolicyVersion, report.PolicySha256, report.TetragonVersion, len(report.Policies))
+	h.logger.Info("sending health report to management API: client_id=%s, status=%s, policy_display_name=%s, policy_sha256=%s..., tetragon_version=%s, policies_count=%d",
+		clientID, report.Status, report.PolicyDisplayName, shortHash(report.PolicySha256), report.TetragonVersion, len(report.Policies))
 
 	if err := h.apiClient.ReportHealth(ctx, clientID, report); err != nil {
 		h.consecutiveErrors++
@@ -78,12 +78,12 @@ func (h *HealthReporter) getTetragonVersion(ctx context.Context) (string, error)
 
 func (h *HealthReporter) buildHealthReport(statuses []types.PolicyStatus, tetragonVersion string) types.HealthReport {
 	report := types.HealthReport{
-		Timestamp:       time.Now(),
-		Status:          "healthy",
-		PolicyVersion:   h.cache.GetPolicyVersion(),
-		PolicySha256:    h.cache.GetPolicySha256(),
-		TetragonVersion: tetragonVersion,
-		Policies:        statuses,
+		Timestamp:         time.Now(),
+		Status:            "healthy",
+		PolicyDisplayName: h.cache.GetPolicyDisplayName(),
+		PolicySha256:      h.cache.GetPolicySha256(),
+		TetragonVersion:   tetragonVersion,
+		Policies:          statuses,
 	}
 
 	for i, status := range statuses {

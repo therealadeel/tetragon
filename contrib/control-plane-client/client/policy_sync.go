@@ -15,6 +15,22 @@ import (
 	"github.com/cilium/tetragon/contrib/control-plane-client/types"
 )
 
+// shortHash returns first 12 characters of a SHA256 hash for display
+func shortHash(sha256 string) string {
+	if len(sha256) > 12 {
+		return sha256[:12]
+	}
+	return sha256
+}
+
+// getDisplayName returns the display name, falling back to short hash if empty
+func getDisplayName(resp *types.PoliciesResponse) string {
+	if resp.DisplayName != "" {
+		return resp.DisplayName
+	}
+	return shortHash(resp.Sha256)
+}
+
 // PolicySyncManager handles policy synchronization with the management API
 type PolicySyncManager struct {
 	apiClient         apiclient.ClientInterface
@@ -69,16 +85,18 @@ func (p *PolicySyncManager) Sync(ctx context.Context, clientID string) error {
 		return cperrors.NewAPIError("failed to get policies", 0, err)
 	}
 
-	currentVersion := p.cache.GetPolicyVersion()
+	currentDisplayName := p.cache.GetPolicyDisplayName()
 	currentSha256 := p.cache.GetPolicySha256()
+	newDisplayName := getDisplayName(resp)
 
-	if resp.Version == currentVersion && resp.Sha256 == currentSha256 {
-		p.logger.Info("policies already at version %s (sha256: %s), no update needed", currentVersion, currentSha256)
+	// Use SHA256 as authoritative source for change detection
+	if resp.Sha256 == currentSha256 {
+		p.logger.Info("policies unchanged at %s (sha256: %s...)", newDisplayName, shortHash(currentSha256))
 		p.consecutiveErrors = 0 // Reset on success
 		return nil
 	}
 
-	p.logger.Info("applying new policy version %s (previous: %s)", resp.Version, currentVersion)
+	p.logger.Info("applying new policies: %s (previous: %s, sha256: %s...)", newDisplayName, currentDisplayName, shortHash(resp.Sha256))
 
 	if err := p.applyPolicies(ctx, resp); err != nil {
 		p.consecutiveErrors++
@@ -86,7 +104,7 @@ func (p *PolicySyncManager) Sync(ctx context.Context, clientID string) error {
 	}
 
 	p.updatePolicyState(resp)
-	p.logger.Info("successfully applied policy version %s (sha256: %s)", resp.Version, resp.Sha256)
+	p.logger.Info("successfully applied policies: %s (sha256: %s...)", newDisplayName, shortHash(resp.Sha256))
 	p.consecutiveErrors = 0 // Reset on success
 	return nil
 }
@@ -218,6 +236,6 @@ func (p *PolicySyncManager) applyPolicyDiff(ctx context.Context, diff *policy.Di
 }
 
 func (p *PolicySyncManager) updatePolicyState(resp *types.PoliciesResponse) {
-	p.cache.SetPolicyVersion(resp.Version)
+	p.cache.SetPolicyDisplayName(getDisplayName(resp))
 	p.cache.SetPolicySha256(resp.Sha256)
 }

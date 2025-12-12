@@ -20,9 +20,9 @@ type RegistrationResponse struct {
 
 // PoliciesResponse represents the response from the policies endpoint
 type PoliciesResponse struct {
-	Version  string `json:"version"`
-	Policies string `json:"policies"` // base64-encoded YAML
-	Sha256   string `json:"sha256"`   // SHA256 hash of the policies content
+	Sha256      string `json:"sha256"`       // SHA256 hash of the policies content (authoritative)
+	DisplayName string `json:"display_name"` // Human-friendly identifier (optional, for UX)
+	Policies    string `json:"policies"`     // base64-encoded YAML
 }
 
 // PolicyStatus represents the status of a single tracing policy
@@ -35,12 +35,12 @@ type PolicyStatus struct {
 
 // HealthReport represents the health status report
 type HealthReport struct {
-	Status          string         `json:"status"`
-	PolicyVersion   string         `json:"policy_version"`
-	PolicySha256    string         `json:"policy_sha256"`
-	TetragonVersion string         `json:"tetragon_version"`
-	Policies        []PolicyStatus `json:"policies"`
-	Timestamp       time.Time      `json:"timestamp"`
+	Status            string         `json:"status"`
+	PolicyDisplayName string         `json:"policy_display_name"`
+	PolicySha256      string         `json:"policy_sha256"`
+	TetragonVersion   string         `json:"tetragon_version"`
+	Policies          []PolicyStatus `json:"policies"`
+	Timestamp         time.Time      `json:"timestamp"`
 }
 
 // TracingPolicyMetadata represents metadata from a tracing policy YAML

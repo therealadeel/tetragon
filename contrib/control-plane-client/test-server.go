@@ -73,9 +73,9 @@ type RegistrationResponse struct {
 }
 
 type PoliciesResponse struct {
-	Version  string `json:"version"`
-	Policies string `json:"policies"`
-	Sha256   string `json:"sha256"`
+	Sha256      string `json:"sha256"`
+	DisplayName string `json:"display_name"`
+	Policies    string `json:"policies"`
 }
 
 // In-memory storage for client registrations (hostname+instance_id -> client_id)
@@ -227,9 +227,8 @@ func handleGetPolicies(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		log.Printf("Policy updated! New version: v1.0.%d", policyVersion)
+		log.Printf("Policy updated! Version counter: %d", policyVersion)
 	}
-	currentVersion := policyVersion
 	policyVersionMu.Unlock()
 
 	yamlContent = []byte(yamlString)
@@ -241,13 +240,17 @@ func handleGetPolicies(w http.ResponseWriter, r *http.Request) {
 	hash := sha256.Sum256(yamlContent)
 	sha256Hash := hex.EncodeToString(hash[:])
 
+	// Generate human-friendly display name: timestamp + short hash
+	shortHash := sha256Hash[:12]
+	displayName := fmt.Sprintf("%s-%s", time.Now().Format("2006-01-02-15:04"), shortHash)
+
 	resp := PoliciesResponse{
-		Version:  fmt.Sprintf("v1.0.%d", currentVersion),
-		Policies: encodedPolicies,
-		Sha256:   sha256Hash,
+		Sha256:      sha256Hash,
+		DisplayName: displayName,
+		Policies:    encodedPolicies,
 	}
 
-	log.Printf("Serving policies version %s (sha256: %s, updated: %v)", resp.Version, resp.Sha256, shouldUpdate)
+	log.Printf("Serving policies %s (sha256: %s, updated: %v)", resp.DisplayName, shortHash, shouldUpdate)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
