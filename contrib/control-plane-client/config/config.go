@@ -9,12 +9,13 @@ import (
 )
 
 type Config struct {
-	ManagementAPI   ManagementAPIConfig   `yaml:"management_api"`
-	Tetragon        TetragonConfig        `yaml:"tetragon"`
-	Registration    RegistrationConfig    `yaml:"registration"`
-	PolicySync      PolicySyncConfig      `yaml:"policy_sync"`
-	HealthReporting HealthReportingConfig `yaml:"health_reporting"`
-	Logging         LoggingConfig         `yaml:"logging"`
+	ManagementAPI   ManagementAPIConfig     `yaml:"management_api"`
+	Tetragon        TetragonConfig          `yaml:"tetragon"`
+	Registration    RegistrationConfig      `yaml:"registration"`
+	PolicySync      PolicySyncConfig        `yaml:"policy_sync"`
+	HealthReporting HealthReportingConfig   `yaml:"health_reporting"`
+	Metrics         MetricsPublishingConfig `yaml:"metrics_publishing"`
+	Logging         LoggingConfig           `yaml:"logging"`
 }
 
 type ManagementAPIConfig struct {
@@ -64,6 +65,15 @@ type PolicySyncConfig struct {
 type HealthReportingConfig struct {
 	Enabled  bool          `yaml:"enabled"`
 	Interval time.Duration `yaml:"interval"`
+}
+
+type MetricsPublishingConfig struct {
+	Enabled               bool          `yaml:"enabled"`
+	Interval              time.Duration `yaml:"interval"`
+	Endpoint              string        `yaml:"endpoint"`
+	RequestTimeout        time.Duration `yaml:"request_timeout"`
+	Format                string        `yaml:"format"`
+	InsecureSkipTLSVerify bool          `yaml:"insecure_skip_tls_verify"`
 }
 
 type LoggingConfig struct {
@@ -158,6 +168,19 @@ func (c *Config) SetDefaults() {
 		c.HealthReporting.Interval = 300 * time.Second
 	}
 
+	if c.Metrics.Interval == 0 {
+		c.Metrics.Interval = 60 * time.Second
+	}
+	if c.Metrics.Endpoint == "" {
+		c.Metrics.Endpoint = "http://localhost:2112/metrics"
+	}
+	if c.Metrics.RequestTimeout == 0 {
+		c.Metrics.RequestTimeout = 10 * time.Second
+	}
+	if c.Metrics.Format == "" {
+		c.Metrics.Format = "prometheus"
+	}
+
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"
 	}
@@ -204,6 +227,21 @@ func (c *Config) Validate() error {
 	validFormats := map[string]bool{"json": true, "text": true}
 	if !validFormats[c.Logging.Format] {
 		return fmt.Errorf("logging.format must be one of: json, text")
+	}
+
+	if c.Metrics.Enabled {
+		if c.Metrics.Endpoint == "" {
+			return fmt.Errorf("metrics_publishing.endpoint is required when enabled")
+		}
+		if c.Metrics.Interval <= 0 {
+			return fmt.Errorf("metrics_publishing.interval must be > 0 when enabled")
+		}
+		if c.Metrics.RequestTimeout <= 0 {
+			return fmt.Errorf("metrics_publishing.request_timeout must be > 0 when enabled")
+		}
+		if c.Metrics.Format == "" {
+			return fmt.Errorf("metrics_publishing.format is required when enabled")
+		}
 	}
 
 	return nil

@@ -17,6 +17,7 @@ The control plane client connects to a management REST API to:
 - **Incremental Updates**: Efficiently applies only changed policies (add/update/delete) instead of replacing all policies
 - **Version-based Updates**: Only updates policies when the version or SHA256 hash changes
 - **Health Reporting**: Regularly sends client health and policy status to the management API
+- **Metrics Publishing**: Scrapes local or remote Prometheus metrics and forwards them to the management API
 - **Retry Logic**: Built-in exponential backoff for resilient API communication
 - **Configurable**: Extensive configuration options for all client behaviors
 
@@ -88,6 +89,15 @@ policy_sync:
 health_reporting:
   enabled: true
   interval: "300s"  # How often to report health
+
+# Metrics publishing settings
+metrics_publishing:
+  enabled: true
+  interval: "60s"  # How often to collect and forward metrics
+  endpoint: "http://localhost:2112/metrics"  # Set to remote host if Tetragon runs elsewhere
+  request_timeout: "10s"
+  format: "prometheus"
+  insecure_skip_tls_verify: false
 
 # Logging
 logging:
@@ -202,6 +212,29 @@ Request:
   "timestamp": "2025-12-09T10:00:00Z"
 }
 ```
+
+### Metrics Report Endpoint
+
+**POST** `/clients/{client_id}/metrics`
+
+The client scrapes Prometheus metrics (default `http://localhost:2112/metrics`) and forwards the raw payload.
+
+Request:
+```json
+{
+  "format": "prometheus",
+  "endpoint": "http://localhost:2112/metrics",
+  "payload": "# HELP tetragon_events_total Total number of events\\n# TYPE tetragon_events_total counter\\ntetragon_events_total 42\\n",
+  "timestamp": "2025-12-09T10:00:05Z"
+}
+```
+
+Configure `metrics_publishing.endpoint` to target a remote host or non-default path when Tetragon runs on another machine.
+
+## Additional Documentation
+
+- `HEALTH_REPORTING.md` – detailed description of the health payload and evaluation logic.
+- `METRICS_PUBLISHING.md` – specification for the metrics publisher, payload format, and configuration.
 
 ## Building
 

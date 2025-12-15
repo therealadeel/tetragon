@@ -189,3 +189,41 @@ func (c *Client) ReportHealth(ctx context.Context, clientID string, report types
 
 	return err
 }
+
+func (c *Client) PublishMetrics(ctx context.Context, clientID string, report types.MetricsReport) error {
+	if report.Timestamp.IsZero() {
+		report.Timestamp = time.Now()
+	}
+
+	err := c.retryer.DoHTTP(ctx, func(ctx context.Context) (int, error) {
+		jsonData, err := json.Marshal(report)
+		if err != nil {
+			return 0, fmt.Errorf("failed to marshal metrics report: %w", err)
+		}
+
+		url := fmt.Sprintf("%s/clients/%s/metrics", c.baseURL, clientID)
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(jsonData))
+		if err != nil {
+			return 0, fmt.Errorf("failed to create request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if c.authToken != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+		}
+
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			return 0, fmt.Errorf("failed to send request: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+			body, _ := io.ReadAll(resp.Body)
+			return resp.StatusCode, fmt.Errorf("metrics report failed: %s", string(body))
+		}
+
+		return resp.StatusCode, nil
+	})
+
+	return err
+}

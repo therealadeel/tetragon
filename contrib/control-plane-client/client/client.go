@@ -26,6 +26,7 @@ type ControlPlaneClient struct {
 	registrationManager *RegistrationManager
 	policySyncManager   *PolicySyncManager
 	healthReporter      *HealthReporter
+	metricsPublisher    *MetricsPublisher
 	clientID            string
 	stopCh              chan struct{}
 	reloadCh            chan os.Signal
@@ -96,6 +97,19 @@ func NewControlPlaneClient(cfg *config.Config) (*ControlPlaneClient, error) {
 		log,
 	)
 
+	if cfg.Metrics.Enabled {
+		c.metricsPublisher = NewMetricsPublisher(
+			c.apiClient,
+			log,
+			MetricsPublisherConfig{
+				Endpoint:              cfg.Metrics.Endpoint,
+				Format:                cfg.Metrics.Format,
+				RequestTimeout:        cfg.Metrics.RequestTimeout,
+				InsecureSkipTLSVerify: cfg.Metrics.InsecureSkipTLSVerify,
+			},
+		)
+	}
+
 	return c, nil
 }
 
@@ -134,6 +148,14 @@ func (c *ControlPlaneClient) Start(ctx context.Context) error {
 	// Start background loops
 	go c.policySyncLoop(ctx)
 	go c.healthReportingLoop(ctx)
+	if c.cfg.Metrics.Enabled {
+		if c.metricsPublisher == nil {
+			return cperrors.NewConfigError("metrics publishing enabled but publisher is not configured", nil)
+		}
+		go c.metricsPublishingLoop(ctx)
+	} else {
+		c.logger.Info("metrics publishing disabled via configuration")
+	}
 	go c.configReloadLoop(ctx)
 
 	// Wait for shutdown signal
@@ -225,6 +247,50 @@ func (c *ControlPlaneClient) healthReportingLoop(ctx context.Context) {
 			} else {
 				// Reset to normal interval with jitter on success
 				ticker.Reset(addJitter(c.cfg.HealthReporting.Interval))
+			}
+
+			cancel()
+		}
+	}
+}
+
+// metricsPublishingLoop periodically sends Prometheus metrics payloads to the management API
+func (c *ControlPlaneClient) metricsPublishingLoop(ctx context.Context) {
+	if c.metricsPublisher == nil {
+		c.logger.Warn("metrics publishing loop requested but publisher is nil")
+		return
+	}
+
+	initialInterval := addJitter(c.cfg.Metrics.Interval)
+	c.logger.Debug("metrics publishing interval with jitter: %v (base: %v)", initialInterval, c.cfg.Metrics.Interval)
+
+	ticker := time.NewTicker(initialInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			c.logger.Info("metrics publishing loop stopping due to context cancellation")
+			return
+		case <-c.stopCh:
+			c.logger.Info("metrics publishing loop stopping due to stop signal")
+			return
+		case <-ticker.C:
+			timeout := c.cfg.ManagementAPI.Timeout + c.cfg.Metrics.RequestTimeout
+			publishCtx, cancel := context.WithTimeout(ctx, timeout)
+
+			if err := c.metricsPublisher.Publish(publishCtx, c.clientID); err != nil {
+				c.logger.Error("metrics publishing error: %v", err)
+
+				consecutiveErrors := c.metricsPublisher.GetConsecutiveErrors()
+				if consecutiveErrors > 0 {
+					backoff := calculateBackoffDuration(consecutiveErrors, c.cfg.Metrics.Interval)
+					c.logger.Warn("metrics publishing backing off due to %d consecutive errors, additional delay: %v",
+						consecutiveErrors, backoff)
+					ticker.Reset(c.cfg.Metrics.Interval + backoff)
+				}
+			} else {
+				ticker.Reset(addJitter(c.cfg.Metrics.Interval))
 			}
 
 			cancel()

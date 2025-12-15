@@ -43,6 +43,14 @@ type HealthReport struct {
 	Timestamp         time.Time      `json:"timestamp"`
 }
 
+// MetricsReport represents a Prometheus metrics payload collected from a Tetragon instance
+type MetricsReport struct {
+	Format    string    `json:"format"`
+	Endpoint  string    `json:"endpoint"`
+	Payload   string    `json:"payload"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
 // TracingPolicyMetadata represents metadata from a tracing policy YAML
 type TracingPolicyMetadata struct {
 	Name      string `yaml:"name"`
