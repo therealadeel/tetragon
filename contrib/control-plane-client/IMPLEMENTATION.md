@@ -419,9 +419,8 @@ When `cleanup_existing: true`, the client deletes all existing Tetragon policies
 
 The client reports "degraded" if any policy has:
 - `state != "TP_STATE_ENABLED"` (protobuf enum string)
-- Non-empty `error` field
 
-Otherwise, reports "healthy".
+Otherwise, reports "healthy". Policy `error` strings are logged for diagnostics but do not change the overall status unless the state transitions away from `TP_STATE_ENABLED`.
 
 ## Files Status
 
@@ -443,10 +442,6 @@ Otherwise, reports "healthy".
 - ✅ `interface.go`: ClientInterface for testability
 - ✅ `client_tls_test.go`: TLS configuration tests
 
-**Policy Package** (`policy/`):
-- ✅ `policy.go`: Incremental diff logic with SHA256-based change detection
-- ✅ `policy_test.go`: Comprehensive tests for parsing and diff calculation
-
 **Tetragon Package** (`tetragon/`):
 - ✅ `client.go`: gRPC client for Tetragon API
 - ✅ `interface.go`: ClientInterface for testability
@@ -454,12 +449,6 @@ Otherwise, reports "healthy".
 **Metadata Package** (`metadata/`):
 - ✅ `collector.go`: System metadata collection
 - ✅ `interface.go`: CollectorInterface for testability
-
-**Cache Package** (`cache/`):
-- ✅ `cache.go`: Thread-safe state storage with no error returns
-- Fields: clientID, policyDisplayName, policySha256, policyInventory
-- GetPolicyDisplayName() / SetPolicyDisplayName() for human-friendly display
-- GetPolicySha256() / SetPolicySha256() for authoritative hash comparison
 
 **Errors Package** (`errors/`):
 - ✅ `errors.go`: Typed errors with NewMetadataError, NewAPIError, NewTetragonError, NewPolicyError
@@ -471,22 +460,10 @@ Otherwise, reports "healthy".
 **Entry Point**:
 - ✅ `main.go` (177 lines): Command-line flags including --insecure-skip-tls-verify, --log-output-directory with proper empty string handling
 
-### Documentation Files
+**Policy Package** (`policy/`):
+- ✅ `policy.go`: Incremental diff logic with SHA256-based change detection
 
-- ✅ `IMPLEMENTATION.md` (this file): Architecture and implementation details
-- ✅ `LOG_ROTATION.md`: Comprehensive guide for logrotate integration
-- ✅ `logrotate-example.conf`: Working logrotate configuration with SIGHUP postrotate
-- ✅ `README.md`: User documentation
-- ✅ `TESTING.md`: Testing guide
-
-### Test Files
-
-- ✅ `logger/logger_test.go`: Logger tests including rotation test
-- ✅ `apiclient/client_tls_test.go`: TLS configuration tests
-- ✅ `policy/policy_test.go`: Policy parsing and diff tests
-- ✅ `cache/cache_test.go`: Cache concurrency tests
-
-All files are production-ready with proper error handling, logging, and test coverage.
+**Tetragon Package** (`tetragon/`):
 
 
 **Build & Test:**
@@ -734,3 +711,23 @@ The implementation is production-ready with:
 - **Context propagation**: Ensures proper cancellation through all layers
 
 The implementation is complete in design and structure. The source code is provided in the chat history and needs to be assembled into the respective files.
+**Cache Package** (`cache/`):
+- ✅ `cache.go`: Thread-safe state storage with no error returns
+- Fields: clientID, policyDisplayName, policySha256, policyInventory
+- GetPolicyDisplayName() / SetPolicyDisplayName() for human-friendly display
+- GetPolicySha256() / SetPolicySha256() for authoritative hash comparison
+
+### Documentation Files
+
+- ✅ `IMPLEMENTATION.md` (this file): Architecture and implementation details
+- ✅ `LOG_ROTATION.md`: Comprehensive guide for logrotate integration
+- ✅ `logrotate-example.conf`: Working logrotate configuration with SIGHUP postrotate
+- ✅ `README.md`: User documentation
+- ✅ `TESTING.md`: Testing guide
+
+### Test Files
+
+- ✅ `logger/logger_test.go`: Logger tests including rotation test
+- ✅ `apiclient/client_tls_test.go`: TLS configuration tests
+
+All files listed above are production-ready with proper error handling, logging, and the available unit test coverage.
