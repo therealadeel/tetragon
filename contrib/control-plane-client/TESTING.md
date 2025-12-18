@@ -109,14 +109,12 @@ health_reporting:
   enabled: true
   interval: "60s"
 
-cache:
-  client_id_file: "/tmp/tetragon-cp-client/client_id"
-  policy_version_file: "/tmp/tetragon-cp-client/policy_version"
-
 logging:
   level: "debug"
   format: "text"
 ```
+
+> **Note:** The client stores registration and policy metadata in memory only. Restarting the process triggers a new registration sequence.
 
 ### 3. Run the Client
 
@@ -154,11 +152,10 @@ tetra tracingpolicy list
 
 ### 6. Test Policy Updates
 
-1. Modify `example-policies.yaml` 
-2. Change the version in the mock server's `handleGetPolicies` function
-3. Wait for the next sync interval
-4. The client should detect the version change and update policies
-5. Observe the new SHA256 hash logged by both server and client
+1. Modify `example-policies.yaml` (for example, change a metadata annotation or tweak a policy argument)
+2. Wait for the next sync interval
+3. The client should detect the content hash change and update policies
+4. Observe the new SHA256 hash logged by both server and client
 
 ## Manual Testing Scenarios
 
@@ -199,20 +196,6 @@ unset TETRAGON_CONTROL_PLANE_AUTH_TOKEN
 # Expected: HTTP 401 errors (missing Authorization header)
 ```
 
-### Test Registration
-
-```bash
-# Clear cache
-rm -rf /tmp/tetragon-cp-client/
-
-# Run client - should register and cache client ID
-./control-plane-client --config config-test.yaml
-
-# Stop client (Ctrl+C)
-# Run again - should use cached client ID
-./control-plane-client --config config-test.yaml
-```
-
 ### Test Policy Cleanup
 
 ```bash
@@ -242,7 +225,8 @@ tetra tracingpolicy add example-policies.yaml
 ./control-plane-client \
   --config config-test.yaml \
   --environment production \
-  --tags "override:test,local:false" \
+  --tag "override:test" \
+  --tag "local:false" \
   --log-level debug
 ```
 
@@ -276,8 +260,6 @@ tetra tracingpolicy add example-policies.yaml
 ```bash
 # Stop client (Ctrl+C)
 # Stop mock server (Ctrl+C)
-# Remove cache
-rm -rf /tmp/tetragon-cp-client/
 # Remove policies from Tetragon
 tetra tracingpolicy delete file-monitoring
 tetra tracingpolicy delete network-connections

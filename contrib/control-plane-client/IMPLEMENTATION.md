@@ -77,7 +77,7 @@ control-plane-client/
 - Deployment type: `standalone` or `kubernetes`
 - Attempts to retrieve instance_id from AWS IMDSv2 if available
 - Falls back to `/etc/machine-id` or `hostid` if IMDS unavailable
-- Caches client_id for persistent registration across restarts
+- Caches client_id in memory to avoid duplicate registration attempts while the process is running
 - Uses typed errors (MetadataError, APIError) for better error handling
 
 ### 6. **Incremental Policy Management**
@@ -85,8 +85,7 @@ control-plane-client/
 - **Smart diffing**: Compares SHA256 hashes to detect policy changes
 - **Reduced downtime**: Unchanged policies remain active during updates
 - **Policy inventory tracking**: Maintains cache of current policy state
-- **Fallback support**: Can disable incremental mode for full replacement
-- Fetches versioned policies from management API as base64-encoded YAML
+- Fetches policies from the management API as base64-encoded YAML together with a human-readable display name and authoritative SHA256 hash
 - SHA256 hash verification for policy content integrity
 - Optionally cleans up existing policies on startup
 - Parses multi-document YAML (--- separated policies)
@@ -94,7 +93,7 @@ control-plane-client/
 ### 7. **Health Reporting**
 - Periodically reports client health to management API
 - Includes:
-  - Policy version from management API
+  - Policy display name from management API
   - Policy SHA256 hash
   - Tetragon server version
   - Status of all loaded policies with detailed logging
@@ -191,7 +190,6 @@ registration:
 policy_sync:
   enabled: true
   interval: "60s"
-  incremental: true        # Use incremental updates (default: true)
   cleanup_existing: false  # Clean up existing policies on startup
 
 health_reporting:
@@ -203,6 +201,8 @@ logging:
   format: "json"  # json, text
   output_directory: "/var/log/tetragon"  # Empty string = stdout
 ```
+
+> **Note:** Incremental policy synchronization is always enabled in the current implementation. Setting `policy_sync.incremental` to `false` has no effect.
 
 ## Usage
 
@@ -278,7 +278,7 @@ The client uses a manager pattern to separate concerns:
 **RegistrationManager** (`client/registration.go`):
 - Handles client registration with management API
 - Collects system metadata via MetadataCollector
-- Caches client_id for reuse across restarts
+- Caches client_id in memory to prevent repeat registrations during the same process lifetime
 - Tracks consecutive errors for backpressure
 - Uses typed errors (MetadataError, APIError)
 
@@ -288,7 +288,7 @@ The client uses a manager pattern to separate concerns:
 - Applies incremental updates to Tetragon
 - Maintains policy inventory cache
 - Tracks consecutive errors for backpressure
-- Supports cleanup mode and full replacement fallback
+- Supports startup cleanup mode before the first sync
 
 **HealthReporter** (`client/health_reporter.go`):
 - Collects Tetragon version and policy statuses
@@ -410,9 +410,6 @@ Thread-safe in-memory storage:
 - Faster sync times (only process changes)
 - Minimized policy downtime
 - Unchanged policies remain active
-
-**Fallback:**
-Set `incremental: false` to use full replacement mode (delete all, re-add all).
 
 ### Startup Cleanup
 
@@ -617,7 +614,7 @@ All files are production-ready with proper error handling, logging, and test cov
 **Benefits**:
 - Log clarity: `"applying new policies: 2024-12-11-a3f2e8b9"` vs `"applying sha256: a3f2...d0e1"`
 - Operator-friendly health reports with meaningful names
-- No possibility of version increment without content change
+- No possibility of mismatched metadata triggering updates (hash is sole authority)
 - 12-character short hash provides ~281 trillion combinations (collision-free for this use case)
 
 ### Immutable Logger Fields
@@ -728,11 +725,11 @@ The implementation is production-ready with:
 ## Design Decisions
 
 - **IMDSv2**: Supports AWS EC2 instance metadata for cloud deployments
-- **Version-based sync**: Avoids unnecessary policy updates
-- **In-memory cache**: Lightweight storage for client ID, policy version, and policy SHA256 hash during runtime
+- **SHA-based sync**: Avoids unnecessary policy updates by comparing hashes
+- **In-memory cache**: Stores client ID, policy display name, and policy SHA256 hash during runtime (cleared on restart)
 - **Base64 encoding**: Handles binary data and special characters in YAML safely
 - **Multi-document YAML**: Supports standard Kubernetes-style policy files
-- **Configurable cleanup**: Allows choice between additive and replacement policy management
+- **Startup cleanup option**: Optional deletion of existing policies before the initial sync
 - **Retryable HTTP codes**: Follows HTTP standards for retry behavior
 - **Context propagation**: Ensures proper cancellation through all layers
 

@@ -14,9 +14,8 @@ The control plane client connects to a management REST API to:
 
 - **Automatic Registration**: Registers on startup with hostname, instance ID (from IMDSv2 or hostid), environment, architecture, IP address, and custom tags
 - **Policy Synchronization**: Periodically fetches policies from the management API and applies them to Tetragon
-- **Incremental Updates**: Efficiently applies only changed policies (add/update/delete) instead of replacing all policies
-- **Version-based Updates**: Only updates policies when the version or SHA256 hash changes
-- **Health Reporting**: Regularly sends client health and policy status to the management API
+- **Incremental Updates**: Efficiently applies only changed policies (add/update/delete) instead of replacing all policies, based on SHA256 hashes of the rendered policy YAML
+- **Health Reporting**: Regularly sends client health and policy status (including the active policy SHA) to the management API
 - **Metrics Publishing**: Scrapes local or remote Prometheus metrics and forwards them to the management API
 - **Retry Logic**: Built-in exponential backoff for resilient API communication
 - **Configurable**: Extensive configuration options for all client behaviors
@@ -83,7 +82,6 @@ policy_sync:
   enabled: true
   interval: "60s"  # How often to check for policy updates
   cleanup_existing: true  # Remove existing policies on startup
-  incremental: true  # Use incremental updates (default: true)
 
 # Health reporting settings
 health_reporting:
@@ -105,6 +103,8 @@ logging:
   format: "json"  # json, text
 ```
 
+> **Note:** Incremental policy synchronization is always enabled. The `policy_sync.incremental` option is currently ignored.
+
 ## Usage
 
 ### Run the client
@@ -124,7 +124,8 @@ export TETRAGON_CONTROL_PLANE_AUTH_TOKEN="your-api-token-here"
   --management-api-url https://api.example.com/v1 \
   --tetragon-address localhost:54321 \
   --environment production \
-  --tags region:us-west-2,team:security
+  --tag region:us-west-2 \
+  --tag team:security
 ```
 
 ## API Endpoints
@@ -160,7 +161,7 @@ Response:
 Response:
 ```json
 {
-  "version": "v1.2.3",
+  "display_name": "2025-01-15-18:30-a3b5c7d9e1f2",
   "policies": "base64_encoded_yaml_content",
   "sha256": "a3b5c7d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4e6f8a0b2c4d6e8f0a2b4"
 }
@@ -192,7 +193,7 @@ Request:
 ```json
 {
   "status": "healthy",
-  "policy_version": "v1.2.3",
+  "policy_display_name": "2025-01-15-18:30-a3b5c7d9e1f2",
   "policy_sha256": "a3b5c7d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4e6f8a0b2c4d6e8f0a2b4",
   "tetragon_version": "v1.0.2",
   "policies": [
