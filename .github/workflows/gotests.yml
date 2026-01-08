@@ -18,7 +18,7 @@ jobs:
         os: [ ubuntu-24.04, ubuntu-24.04-arm64 ]
     steps:
     - name: Checkout code
-      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
       with:
         path: go/src/github.com/cilium/tetragon/
 
@@ -75,7 +75,7 @@ jobs:
 
     - name: Upload Tetragon logs
       if: failure()
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
       with:
         name: tetragon-json-${{ matrix.os }}
         path: /tmp/tetragon.gotest*
@@ -83,7 +83,7 @@ jobs:
 
     - name: Upload bugtool dumps
       if: failure()
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
       with:
         name: tetragon-bugtool-${{ matrix.os }}
         path: /tmp/tetragon-bugtool*
@@ -91,7 +91,7 @@ jobs:
 
     - name: Upload vmlinux file
       if: failure()
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
       with:
         name: btf-vmlinux-${{ matrix.os }}
         path: /sys/kernel/btf/vmlinux
@@ -102,7 +102,7 @@ jobs:
     timeout-minutes: 40
     steps:
     - name: Checkout code
-      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
       with:
         path: go/src/github.com/cilium/tetragon/
 
