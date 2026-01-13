@@ -23,6 +23,7 @@ type PoliciesResponse struct {
 	Sha256      string `json:"sha256"`       // SHA256 hash of the policies content (authoritative)
 	DisplayName string `json:"display_name"` // Human-friendly identifier (optional, for UX)
 	Policies    string `json:"policies"`     // base64-encoded YAML
+	PolicyCount int    `json:"policy_count"` // Number of policies in this bundle
 }
 
 // PolicyStatus represents the status of a single tracing policy

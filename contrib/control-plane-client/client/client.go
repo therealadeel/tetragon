@@ -138,6 +138,13 @@ func (c *ControlPlaneClient) Start(ctx context.Context) error {
 		if err := c.policySyncManager.CleanupExisting(ctx); err != nil {
 			c.logger.Warn("failed to cleanup existing policies: %v", err)
 		}
+	} else if c.cfg.PolicySync.Incremental {
+		// When using incremental sync without cleanup, seed the local
+		// inventory cache from policies already loaded in Tetragon so we
+		// don't attempt to re-add existing policies on the first sync.
+		if err := c.policySyncManager.SeedInventoryFromTetragon(ctx); err != nil {
+			c.logger.Warn("failed to seed policy inventory from Tetragon: %v", err)
+		}
 	}
 
 	// Initial policy sync

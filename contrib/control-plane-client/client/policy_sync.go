@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -47,6 +48,30 @@ type PolicySyncConfig struct {
 	CleanupExisting bool
 }
 
+// shouldBackoffForError determines if a given error should contribute to
+// backoff calculations. From the client's perspective we only want to
+// back off when talking to a server is failing (e.g. management API or
+// Tetragon connectivity issues), not when there are policy content or
+// validation problems.
+func shouldBackoffForError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var cpErr *cperrors.ControlPlaneError
+	if errors.As(err, &cpErr) {
+		// Do NOT back off on policy errors – these indicate invalid
+		// or unsupported policies rather than server unavailability.
+		if cpErr.Type == cperrors.ErrorTypePolicy {
+			return false
+		}
+	}
+
+	// Default: back off for all other error types, which typically
+	// represent API, network, or Tetragon connectivity issues.
+	return true
+}
+
 // NewPolicySyncManager creates a new policy sync manager
 func NewPolicySyncManager(
 	apiClient apiclient.ClientInterface,
@@ -74,6 +99,43 @@ func (p *PolicySyncManager) CleanupExisting(ctx context.Context) error {
 	return nil
 }
 
+// SeedInventoryFromTetragon initializes the local policy inventory cache
+// from the policies currently loaded in Tetragon. This helps incremental
+// syncs avoid attempting to add policies that already exist.
+func (p *PolicySyncManager) SeedInventoryFromTetragon(ctx context.Context) error {
+	policies, err := p.tetragonClient.ListPolicies(ctx)
+	if err != nil {
+		return cperrors.NewTetragonError("failed to list policies for inventory seeding", err)
+	}
+
+	if len(policies) == 0 {
+		p.logger.Debug("no existing policies found in Tetragon when seeding inventory")
+		return nil
+	}
+
+	inventory := make(map[string]policy.Metadata, len(policies))
+	for _, pol := range policies {
+		if pol == nil {
+			continue
+		}
+
+		key := pol.Name
+		if pol.Namespace != "" {
+			key = pol.Namespace + "/" + pol.Name
+		}
+
+		inventory[key] = policy.Metadata{
+			Name:      pol.Name,
+			Namespace: pol.Namespace,
+			Hash:      "",
+		}
+	}
+
+	p.cache.SetPolicyInventory(inventory)
+	p.logger.Info("seeded policy inventory from Tetragon with %d policies", len(inventory))
+	return nil
+}
+
 // Sync synchronizes policies from the management API
 func (p *PolicySyncManager) Sync(ctx context.Context, clientID string) error {
 	p.logger.Info("syncing policies...")
@@ -81,17 +143,26 @@ func (p *PolicySyncManager) Sync(ctx context.Context, clientID string) error {
 
 	resp, err := p.apiClient.GetPolicies(ctx, clientID)
 	if err != nil {
-		p.consecutiveErrors++
-		return cperrors.NewAPIError("failed to get policies", 0, err)
+		wrapped := cperrors.NewAPIError("failed to get policies", 0, err)
+		if shouldBackoffForError(wrapped) {
+			p.consecutiveErrors++
+		} else {
+			p.consecutiveErrors = 0
+		}
+		return wrapped
 	}
 
 	currentDisplayName := p.cache.GetPolicyDisplayName()
 	currentSha256 := p.cache.GetPolicySha256()
+	currentCount := p.cache.GetPolicyCount()
 	newDisplayName := getDisplayName(resp)
+	newCount := resp.PolicyCount
 
 	// Use SHA256 as authoritative source for change detection
-	if resp.Sha256 == currentSha256 {
-		p.logger.Info("policies unchanged at %s (sha256: %s...)", newDisplayName, shortHash(currentSha256))
+	// and also factor in the server-provided policy count. Both must
+	// match the cached values for us to treat the bundle as unchanged.
+	if resp.Sha256 == currentSha256 && newCount == currentCount {
+		p.logger.Info("policies unchanged at %s (sha256: %s..., count: %d)", newDisplayName, shortHash(currentSha256), newCount)
 		p.consecutiveErrors = 0 // Reset on success
 		return nil
 	}
@@ -99,7 +170,11 @@ func (p *PolicySyncManager) Sync(ctx context.Context, clientID string) error {
 	p.logger.Info("applying new policies: %s (previous: %s, sha256: %s...)", newDisplayName, currentDisplayName, shortHash(resp.Sha256))
 
 	if err := p.applyPolicies(ctx, resp); err != nil {
-		p.consecutiveErrors++
+		if shouldBackoffForError(err) {
+			p.consecutiveErrors++
+		} else {
+			p.consecutiveErrors = 0
+		}
 		return err
 	}
 
@@ -178,6 +253,13 @@ func (p *PolicySyncManager) applyPoliciesIncremental(ctx context.Context, resp *
 
 	// Apply diff
 	if err := p.applyPolicyDiff(ctx, diff); err != nil {
+		// Some policy operations may have succeeded even though others
+		// failed. Refresh the local inventory from Tetragon so we don't
+		// keep trying to re-add policies that are already loaded.
+		p.logger.Warn("failed to apply some policy changes, refreshing inventory from Tetragon: %v", err)
+		if seedErr := p.SeedInventoryFromTetragon(ctx); seedErr != nil {
+			p.logger.Warn("failed to refresh policy inventory after error: %v", seedErr)
+		}
 		return err
 	}
 
@@ -255,4 +337,5 @@ func (p *PolicySyncManager) applyPolicyDiff(ctx context.Context, diff *policy.Di
 func (p *PolicySyncManager) updatePolicyState(resp *types.PoliciesResponse) {
 	p.cache.SetPolicyDisplayName(getDisplayName(resp))
 	p.cache.SetPolicySha256(resp.Sha256)
+	p.cache.SetPolicyCount(resp.PolicyCount)
 }

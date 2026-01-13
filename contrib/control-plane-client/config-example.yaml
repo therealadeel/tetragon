@@ -41,12 +41,12 @@ policy_sync:
 # Health reporting settings
 health_reporting:
   enabled: true
-  interval: "75s"  # How often to report health
+  interval: "70s"  # How often to report health
 
 # Metrics publishing settings
 metrics_publishing:
   enabled: true
-  interval: "80s"  # How often to collect metrics
+  interval: "90s"  # How often to collect metrics
   endpoint: "http://localhost:2112/metrics"
   request_timeout: "10s"
   format: "prometheus"  # Raw payload format reported to the control plane
