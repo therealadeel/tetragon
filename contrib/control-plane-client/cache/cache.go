@@ -12,6 +12,7 @@ type Cache struct {
 	policyDisplayName string
 	policySha256      string
 	policyInventory   map[string]policy.Metadata // key -> metadata
+	policyCount       int
 }
 
 func NewCache() *Cache {
@@ -61,6 +62,19 @@ func (c *Cache) Clear() {
 	c.policyDisplayName = ""
 	c.policySha256 = ""
 	c.policyInventory = nil
+	c.policyCount = 0
+}
+
+func (c *Cache) GetPolicyCount() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.policyCount
+}
+
+func (c *Cache) SetPolicyCount(count int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.policyCount = count
 }
 
 func (c *Cache) GetPolicyInventory() map[string]policy.Metadata {

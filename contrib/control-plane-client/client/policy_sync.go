@@ -121,6 +121,20 @@ func (p *PolicySyncManager) applyPolicies(ctx context.Context, resp *types.Polic
 	}
 
 	// Fall back to delete-all approach
+	// Decode and parse policies so we can track the expected policy count
+	yamlBytes, err := base64.StdEncoding.DecodeString(resp.Policies)
+	if err != nil {
+		return cperrors.NewPolicyError("failed to decode base64 policies", err)
+	}
+
+	desired, err := policy.ParsePolicies(string(yamlBytes))
+	if err != nil {
+		return cperrors.NewPolicyError("failed to parse policies", err)
+	}
+
+	// Track expected number of policies from the control plane
+	p.cache.SetPolicyCount(len(desired))
+
 	if err := p.tetragonClient.DeleteAllPolicies(ctx); err != nil {
 		return cperrors.NewTetragonError("failed to delete existing policies", err)
 	}
@@ -146,6 +160,9 @@ func (p *PolicySyncManager) applyPoliciesIncremental(ctx context.Context, resp *
 	if err != nil {
 		return cperrors.NewPolicyError("failed to parse policies", err)
 	}
+
+	// Track expected number of policies from the control plane
+	p.cache.SetPolicyCount(len(desired))
 
 	// Get current policy inventory from cache
 	current := p.cache.GetPolicyInventory()

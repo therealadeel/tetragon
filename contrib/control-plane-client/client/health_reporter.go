@@ -91,8 +91,14 @@ func (h *HealthReporter) buildHealthReport(statuses []types.PolicyStatus, tetrag
 		if status.State != "TP_STATE_ENABLED" {
 			h.logger.Warn("policy %s state is %s (not TP_STATE_ENABLED), marking as degraded", status.Name, status.State)
 			report.Status = "degraded"
-			break
 		}
+	}
+
+	expected := h.cache.GetPolicyCount()
+	actual := len(statuses)
+	if expected > 0 && actual != expected && report.Status == "healthy" {
+		h.logger.Warn("policy count mismatch: expected=%d, actual=%d; marking as degraded", expected, actual)
+		report.Status = "degraded"
 	}
 
 	return report
