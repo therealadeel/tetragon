@@ -16,6 +16,7 @@ vendor/
 
 # Go workspace file
 go.work
+.gocache/
 
 # Config files (except examples)
 config.yaml
