@@ -15,7 +15,8 @@ type RegistrationRequest struct {
 
 // RegistrationResponse represents the response from client registration
 type RegistrationResponse struct {
-	ClientID string `json:"client_id"`
+	ClientID    string `json:"client_id"`
+	PolicyCount int    `json:"policy_count"` // Number of policies currently assigned to this client
 }
 
 // PoliciesResponse represents the response from the policies endpoint

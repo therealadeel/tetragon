@@ -69,13 +69,15 @@ type RegistrationRequest struct {
 }
 
 type RegistrationResponse struct {
-	ClientID string `json:"client_id"`
+	ClientID    string `json:"client_id"`
+	PolicyCount int    `json:"policy_count"`
 }
 
 type PoliciesResponse struct {
 	Sha256      string `json:"sha256"`
 	DisplayName string `json:"display_name"`
 	Policies    string `json:"policies"`
+	PolicyCount int    `json:"policy_count"`
 }
 
 // In-memory storage for client registrations (hostname+instance_id -> client_id)
@@ -130,11 +132,33 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	clientRegistryMu.Unlock()
 
 	resp := RegistrationResponse{
-		ClientID: clientID,
+		ClientID:    clientID,
+		PolicyCount: getExamplePolicyCount(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func getExamplePolicyCount() int {
+	yamlContent, err := os.ReadFile("example-policies.yaml")
+	if err != nil {
+		log.Printf("Failed to read example policies for policy_count: %v", err)
+		return 0
+	}
+	return countPolicies(string(yamlContent))
+}
+
+func countPolicies(yamlString string) int {
+	// Rough count for multi-document YAML; mirrors how policies are separated.
+	docs := strings.Split(yamlString, "---")
+	count := 0
+	for _, doc := range docs {
+		if strings.TrimSpace(doc) != "" {
+			count++
+		}
+	}
+	return count
 }
 
 func handleClientRequests(w http.ResponseWriter, r *http.Request) {
@@ -244,10 +268,12 @@ func handleGetPolicies(w http.ResponseWriter, r *http.Request) {
 	shortHash := sha256Hash[:12]
 	displayName := fmt.Sprintf("%s-%s", time.Now().Format("2006-01-02-15:04"), shortHash)
 
+	policyCount := countPolicies(yamlString)
 	resp := PoliciesResponse{
 		Sha256:      sha256Hash,
 		DisplayName: displayName,
 		Policies:    encodedPolicies,
+		PolicyCount: policyCount,
 	}
 
 	log.Printf("Serving policies %s (sha256: %s, updated: %v)", resp.DisplayName, shortHash, shouldUpdate)

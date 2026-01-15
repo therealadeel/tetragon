@@ -129,7 +129,8 @@ Request: {
   "tags": ["region:us-west-2"]
 }
 Response: {
-  "client_id": "uuid"
+  "client_id": "uuid",
+  "policy_count": 2
 }
 ```
 
@@ -138,7 +139,8 @@ Response: {
 Response: {
   "sha256": "a3b5c7d9e1f2a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4e6f8a0b2c4d6e8f0a2b4",
   "display_name": "2024-12-11-14:30-a3b5c7d9e1f2",
-  "policies": "base64_encoded_yaml"
+  "policies": "base64_encoded_yaml",
+  "policy_count": 2
 }
 ```
 
