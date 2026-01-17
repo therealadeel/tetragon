@@ -4,7 +4,7 @@ A highly configurable, modular, and robust client for managing Tetragon tracing 
 
 ## Overview
 
-The control plane client connects to a management REST API to:
+The control plane client connects to a Splunk App instance REST API to:
 - Register the client instance with system metadata
 - Retrieve versioned tracing policies
 - Apply policies to the local Tetragon instance via gRPC
@@ -13,7 +13,7 @@ The control plane client connects to a management REST API to:
 ## Features
 
 - **Automatic Registration**: Registers on startup with hostname, instance ID (from IMDSv2 or hostid), environment, architecture, IP address, and custom tags
-- **Policy Synchronization**: Periodically fetches policies from the management API and applies them to Tetragon
+- **Policy Synchronization**: Periodically fetches policies from the Splunk App API and applies them to Tetragon
 - **Incremental Updates**: Efficiently applies only changed policies (add/update/delete) instead of replacing all policies, based on SHA256 hashes of the rendered policy YAML
 - **Health Reporting**: Regularly sends client health and policy status (including the active policy SHA) to the management API
 - **Metrics Publishing**: Scrapes local or remote Prometheus metrics and forwards them to the management API
@@ -25,7 +25,7 @@ The control plane client connects to a management REST API to:
 ```
 ┌─────────────────────────┐
 │  Management API Server  │
-│  (REST)                 │
+│  (Splunk)               │
 └───────────┬─────────────┘
             │
             │ REST (Register, Get Policies, Report Health)
@@ -52,7 +52,7 @@ Example configuration file (`config.yaml`):
 ```yaml
 # Management API configuration
 management_api:
-  base_url: "https://api.example.com/v1"
+  base_url: "https://api.example.com:8089/servicesNS/nobody/tetragon_control_plane/v1"
   auth_token: ""  # Or set via TETRAGON_CONTROL_PLANE_AUTH_TOKEN env var
   timeout: "30s"
   retry:
@@ -110,7 +110,7 @@ logging:
 ### Run the client
 
 ```bash
-# Set auth token via environment variable
+# Set Splunk auth token via environment variable
 export TETRAGON_CONTROL_PLANE_AUTH_TOKEN="your-api-token-here"
 
 ./control-plane-client --config config.yaml
@@ -121,7 +121,7 @@ export TETRAGON_CONTROL_PLANE_AUTH_TOKEN="your-api-token-here"
 ```bash
 ./control-plane-client \
   --config config.yaml \
-  --management-api-url https://api.example.com/v1 \
+  --management-api-url https://api.example.com:8089/servicesNS/nobody/tetragon_control_plane/v1 \
   --tetragon-address localhost:54321 \
   --environment production \
   --tag region:us-west-2 \
@@ -151,7 +151,6 @@ Response:
 ```json
 {
   "client_id": "550e8400-e29b-41d4-a716-446655440000",
-  "policy_count": 2
 }
 ```
 
