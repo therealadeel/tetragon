@@ -129,8 +129,7 @@ Request: {
   "tags": ["region:us-west-2"]
 }
 Response: {
-  "client_id": "uuid",
-  "policy_count": 2
+  "client_id": "uuid"
 }
 ```
 
