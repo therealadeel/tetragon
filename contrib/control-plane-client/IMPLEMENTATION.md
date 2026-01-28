@@ -182,7 +182,7 @@ tetragon:
   timeout: "30s"
 
 registration:
-  environment: "production"  # dev, stage, live, production
+  environment: "production"
   deployment_type: "kubernetes"  # kubernetes or standalone
   tags: ["region:us-west-2", "team:security"]
   use_imds: true

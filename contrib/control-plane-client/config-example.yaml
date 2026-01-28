@@ -21,7 +21,7 @@ tetragon:
 
 # Client registration settings
 registration:
-  environment: "dev"  # dev, stage, live, production
+  environment: "dev" # define a environment that are configured on Splunk Control Plane app
   deployment_type: "standalone"  # standalone or kubernetes
   tags:
     - "region:us-west-2"
@@ -34,19 +34,19 @@ registration:
 # Policy synchronization settings
 policy_sync:
   enabled: true
-  interval: "60s"  # How often to check for policy updates
+  interval: "30s"  # How often to check for policy updates
   cleanup_existing: true  # Remove existing policies on startup
   incremental: true  # Use incremental updates (only add/update/delete changed policies)
 
 # Health reporting settings
 health_reporting:
   enabled: true
-  interval: "70s"  # How often to report health
+  interval: "40s"  # How often to report health
 
 # Metrics publishing settings
 metrics_publishing:
   enabled: true
-  interval: "90s"  # How often to collect metrics
+  interval: "50s"  # How often to collect metrics
   endpoint: "http://localhost:2112/metrics"
   request_timeout: "10s"
   format: "prometheus"  # Raw payload format reported to the control plane

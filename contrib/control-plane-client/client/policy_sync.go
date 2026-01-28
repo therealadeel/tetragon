@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cilium/tetragon/contrib/control-plane-client/apiclient"
 	"github.com/cilium/tetragon/contrib/control-plane-client/cache"
 	cperrors "github.com/cilium/tetragon/contrib/control-plane-client/errors"
 	"github.com/cilium/tetragon/contrib/control-plane-client/logger"
 	"github.com/cilium/tetragon/contrib/control-plane-client/policy"
+	"github.com/cilium/tetragon/contrib/control-plane-client/retry"
 	"github.com/cilium/tetragon/contrib/control-plane-client/tetragon"
 	"github.com/cilium/tetragon/contrib/control-plane-client/types"
 )
@@ -70,6 +72,14 @@ func shouldBackoffForError(err error) bool {
 	// Default: back off for all other error types, which typically
 	// represent API, network, or Tetragon connectivity issues.
 	return true
+}
+
+func httpStatusCodeFromError(err error) int {
+	var httpErr *retry.HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode
+	}
+	return 0
 }
 
 // NewPolicySyncManager creates a new policy sync manager
@@ -143,7 +153,22 @@ func (p *PolicySyncManager) Sync(ctx context.Context, clientID string) error {
 
 	resp, err := p.apiClient.GetPolicies(ctx, clientID)
 	if err != nil {
-		wrapped := cperrors.NewAPIError("failed to get policies", 0, err)
+		statusCode := httpStatusCodeFromError(err)
+		if statusCode != 0 {
+			p.cache.SetPolicySyncError(cache.PolicySyncError{
+				StatusCode: statusCode,
+				Message:    err.Error(),
+				Timestamp:  time.Now(),
+			})
+		} else if _, ok := p.cache.GetPolicySyncError(); !ok {
+			p.cache.SetPolicySyncError(cache.PolicySyncError{
+				StatusCode: 0,
+				Message:    err.Error(),
+				Timestamp:  time.Now(),
+			})
+		}
+
+		wrapped := cperrors.NewAPIError("failed to get policies", statusCode, err)
 		if shouldBackoffForError(wrapped) {
 			p.consecutiveErrors++
 		} else {
@@ -151,6 +176,7 @@ func (p *PolicySyncManager) Sync(ctx context.Context, clientID string) error {
 		}
 		return wrapped
 	}
+	p.cache.ClearPolicySyncError()
 
 	currentDisplayName := p.cache.GetPolicyDisplayName()
 	currentSha256 := p.cache.GetPolicySha256()

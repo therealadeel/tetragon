@@ -214,11 +214,6 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("management_api.retry.backoff_multiplier must be > 0")
 	}
 
-	validEnvs := map[string]bool{"dev": true, "stage": true, "live": true, "production": true}
-	if !validEnvs[c.Registration.Environment] {
-		return fmt.Errorf("registration.environment must be one of: dev, stage, live, production")
-	}
-
 	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
 	if !validLevels[c.Logging.Level] {
 		return fmt.Errorf("logging.level must be one of: debug, info, warn, error")

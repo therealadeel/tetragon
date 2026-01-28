@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	"github.com/cilium/tetragon/contrib/control-plane-client/apiclient"
@@ -98,6 +99,13 @@ func (h *HealthReporter) buildHealthReport(statuses []types.PolicyStatus, tetrag
 	actual := len(statuses)
 	if expected > 0 && actual != expected && report.Status == "healthy" {
 		h.logger.Warn("policy count mismatch: expected=%d, actual=%d; marking as degraded", expected, actual)
+		report.Status = "degraded"
+	}
+
+	if syncErr, ok := h.cache.GetPolicySyncError(); ok && syncErr.StatusCode == http.StatusNotFound {
+		if report.Status == "healthy" {
+			h.logger.Warn("policy sync returned HTTP %d (%s); marking as degraded", syncErr.StatusCode, syncErr.Message)
+		}
 		report.Status = "degraded"
 	}
 

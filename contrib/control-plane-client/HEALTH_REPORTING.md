@@ -116,6 +116,7 @@ for each policy in policies:
 1. **No Policies**: If `policies` array is empty, status is `"healthy"` (no policies to fail)
 2. **Tetragon Version Unknown**: Version field set to `"unknown"`, but doesn't affect health status
 3. **Policy Errors**: Non-empty `error` field doesn't automatically set degraded status, only `state` matters
+4. **Policy Sync 404**: If the last policy sync failed with HTTP 404 (e.g., no active policy for the configured environment), status is `"degraded"`
 
 ## Data Collection Process
 
