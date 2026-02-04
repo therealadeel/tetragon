@@ -26,11 +26,11 @@ The control plane client connects to a Splunk App instance REST API to:
 ┌─────────────────────────┐
 │  Management API Server  │
 │  (Splunk)               │
-└───────────┬─────────────┘
+└───────────▲─────────────┘
             │
             │ REST (Register, Get Policies, Report Health)
             │
-┌───────────▼─────────────┐
+┌─────────────────────────┐
 │  Control Plane Client   │
 │  - Registration         │
 │  - Policy Sync          │
