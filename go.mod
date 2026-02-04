@@ -6,7 +6,7 @@ go 1.25.0
 require (
 	github.com/alecthomas/kong v1.13.0
 	github.com/cilium/ebpf v0.20.0
-	github.com/cilium/little-vm-helper v0.0.28
+	github.com/cilium/little-vm-helper v0.0.29-0.20260122213414-65d8cfc72e11
 	github.com/cilium/lumberjack/v2 v2.4.1
 	github.com/cilium/tetragon/api v0.0.0-00010101000000-000000000000
 	github.com/cilium/tetragon/pkg/k8s v0.0.0-00010101000000-000000000000
@@ -25,13 +25,12 @@ require (
 	github.com/isovalent/metricstool v0.1.4
 	github.com/jpillora/longestcommon v0.0.0-20161227235612-adb9d91ee629
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
-	github.com/mennanov/fieldmask-utils v1.1.3
+	github.com/mennanov/fieldmask-utils v1.1.4
 	github.com/opencontainers/runtime-spec v1.3.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/common v0.67.5
 	github.com/prometheus/procfs v0.19.2
-	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
@@ -54,7 +53,7 @@ require (
 	k8s.io/code-generator v0.35.0
 	k8s.io/cri-api v0.35.0
 	k8s.io/klog/v2 v2.130.1
-	sigs.k8s.io/controller-runtime v0.22.4
+	sigs.k8s.io/controller-runtime v0.23.1
 	sigs.k8s.io/controller-tools v0.20.0
 	sigs.k8s.io/e2e-framework v0.6.0
 	sigs.k8s.io/yaml v1.6.0
@@ -119,6 +118,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/sagikazarmark/locafero v0.11.0 // indirect
+	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
@@ -138,7 +138,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/exp v0.0.0-20241108190413-2d47ceb2692f // indirect
-	golang.org/x/mod v0.31.0 // indirect
+	golang.org/x/mod v0.32.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
@@ -157,7 +157,7 @@ require (
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
-	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
+	sigs.k8s.io/structured-merge-diff/v6 v6.3.2-0.20260122202528-d9cc6641c482 // indirect
 )
 
 replace (

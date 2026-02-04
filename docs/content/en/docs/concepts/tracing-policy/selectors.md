@@ -16,6 +16,7 @@ Each selector comprises a set of filters:
 - [`matchReturnArgs`](#return-args-filter): filter on the return value.
 - [`matchPIDs`](#pids-filter): filter on PID.
 - [`matchBinaries`](#binaries-filter): filter on binary path.
+- [`matchParentBinaries`](#parent-binaries-filter): filter on parent binary path.
 - [`matchNamespaces`](#namespaces-filter): filter on Linux namespaces.
 - [`matchCapabilities`](#capabilities-filter): filter on Linux capabilities.
 - [`matchNamespaceChanges`](#namespace-changes-filter): filter on Linux namespaces changes.
@@ -264,7 +265,7 @@ is `followForks: true`, so all the child processes are followed.
 
 ### Follow children
 
-the `matchBinaries` filter can be configured to also apply to children of matching processes. To do
+The `matchBinaries` filter can be configured to also apply to children of matching processes. To do
 this, set `followChildren` to `true`. For example:
 
 ```yaml
@@ -326,6 +327,91 @@ while the whole `kprobe` call is the following:
       - "2"
       - "3"
 ```
+
+
+### Scripts with shebangs
+
+{{< caution >}}
+`matchBinaries` matches against the `interpreter`, not the script path.
+{{< /caution >}}
+
+When executing a script with a shebang (i.e. `#!/usr/bin/python3`), Linux actually runs the
+interpreter and passes the script as an argument. Current implementation of `matchBinaries` filters based on the interpreter path (i.e. `/usr/bin/python3`) and not the script name (i.e. `/opt/scripts/my_script.py`).
+
+This won't work:
+
+```yaml
+- matchBinaries:
+  - operator: "In"
+    values:
+    - "/opt/scripts/my_script.py"
+```
+
+Match the interpreter instead:
+
+```yaml
+- matchBinaries:
+  - operator: "In"
+    values:
+    - "/usr/bin/python3"
+```
+
+## Parent binaries filter
+
+{{< warning >}}
+`matchParentBinaries` selector can be used only with BPF map `parents_map` enabled (option `--parents-map-enabled`), which adds
+additional memory overhead. 
+{{< /warning >}}
+
+Parent binaries filter provides filtering based on current process parent
+binary path, which works similarly to the `matchBinaries` filter. It can be
+specified with the `matchParentBinaries` field. For instance, the following
+`matchParentBinaries` selector will match only if binary `cat` was executed
+from interactive shell like `zsh`, `bash`, `sh`:
+
+```yaml
+- matchParentBinaries:
+  - operator: "In"
+    values:
+    - "/usr/bin/bash"
+    - "/usr/bin/sh"
+    - "/usr/bin/zsh"
+  matchBinaries:
+  - operator: "In"
+    values:
+    - "/usr/bin/cat"
+```
+
+The available operators for `matchParentBinaries` are:
+- `In`
+- `NotIn`
+- `Prefix`
+- `NotPrefix`
+- `Postfix`
+- `NotPostfix`
+
+The `values` field has to be a map of `strings`. The default behaviour
+is `followForks: true`, so all the child processes are followed.
+
+### Follow children
+
+The `matchParentBinaries` filter can be configured to also apply to children of
+matching parent processes. To do this, set `followChildren` to `true`. For example:
+
+```yaml
+- matchParentBinaries:
+  - operator: "In"
+    values:
+    - "/usr/bin/bash"
+    followChildren: true
+```
+
+This policy will match any process, which direct or transitive parent process binary is `bash`.
+
+There are a number of limitations when using `followChildren`:
+- Children created before the policy was installed will not be matched.
+- The number of `matchParentBinaries` sections with `followChildren: true` cannot exceed 64.
+- Operators other than `In/NotIn` are not supported.
 
 ## Namespaces filter
 
@@ -1986,18 +2072,20 @@ The above would be executed in kernel as:
 
 ### Limitations
 
-{{% pageinfo %}}
-Those limitations might be outdated, see [issue #709](https://github.com/cilium/tetragon/issues/709).
-{{% /pageinfo %}}
-
 Because BPF must be bounded we have to place limits on how many selectors can
 exist.
 
-- Max Selectors 8.
+- Max Selectors 5.
 - Max PID values per selector 4
 - Max MatchArgs per selector 5 (one per index)
-- Max MatchArg Values per MatchArgs 1 (limiting initial implementation can bump
-  to 16 or so)
+- Max MatchArg Values per MatchArgs 4 (for operators like `Equal`, `NotEqual`,
+  `GT`, `LT`, etc.)
+- Max file match values (using `fd` or `file` arg): 8 on kernels ≥5.3, 2 on kernels <5.3
+- String prefix max length: 256 chars
+- String postfix max length: 128 chars
+
+For an unlimited number of values, consider using the `InMap` or `NotInMap`
+operators which store values in a BPF map.
 
 
 ## Return Actions filter

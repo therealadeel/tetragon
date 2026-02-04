@@ -139,6 +139,7 @@ enum {
 	TAIL_CALL_SEND = 5,
 	TAIL_CALL_PATH = 6,
 	TAIL_CALL_PROCESS_2 = 7,
+	TAIL_CALL_ARGS_2 = 8,
 };
 
 struct selector_action {
@@ -579,11 +580,12 @@ FUNC_INLINE long copy_kernel_module(char *args, unsigned long arg)
 	return sizeof(struct tg_kernel_module);
 }
 
-#define ARGM_INDEX_MASK	  0xf
-#define ARGM_RETURN_COPY  BIT(4)
-#define ARGM_MAX_DATA	  BIT(5)
-#define ARGM_CURRENT_TASK BIT(6)
-#define ARGM_PT_REGS	  BIT(7)
+#define ARGM_INDEX_MASK	     0xf
+#define ARGM_RETURN_COPY     BIT(4)
+#define ARGM_MAX_DATA	     BIT(5)
+#define ARGM_CURRENT_TASK    BIT(6)
+#define ARGM_PT_REGS	     BIT(7)
+#define ARGM_PT_REGS_PRELOAD BIT(8)
 
 FUNC_INLINE bool has_return_copy(unsigned long argm)
 {
@@ -1849,17 +1851,21 @@ struct match_binaries_sel_opts {
 	__u32 mbset_id;
 };
 
-// This map is used by the matchBinaries selectors to retrieve their options
+// We need data for:
+// - matchBinaries, keys [0, MAX_SELECTORS)
+// - matchParentBinaries, keys [MAX_SELECTORS, MAX_SELECTORS * 2)
+#define MB_MAX_ENTRIES (MAX_SELECTORS * 2)
+
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__uint(max_entries, MAX_SELECTORS);
+	__uint(max_entries, MB_MAX_ENTRIES);
 	__type(key, __u32); /* selector id */
 	__type(value, struct match_binaries_sel_opts);
 } tg_mb_sel_opts SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
-	__uint(max_entries, MAX_SELECTORS); // only one matchBinaries per selector
+	__uint(max_entries, MB_MAX_ENTRIES);
 	__type(key, __u32);
 	__array(
 		values, struct {
@@ -1870,7 +1876,7 @@ struct {
 		});
 } tg_mb_paths SEC(".maps");
 
-FUNC_INLINE int match_binaries(__u32 selidx, struct execve_map_value *current)
+FUNC_INLINE int match_binaries(__u32 key, struct execve_map_value *current, struct binary *bin)
 {
 	bool match = 0;
 	void *path_map;
@@ -1886,12 +1892,19 @@ FUNC_INLINE int match_binaries(__u32 selidx, struct execve_map_value *current)
 
 	// retrieve the selector_options for the matchBinaries, if it's NULL it
 	// means there is not matchBinaries in this selector.
-	selector_options = map_lookup_elem(&tg_mb_sel_opts, &selidx);
+	selector_options = map_lookup_elem(&tg_mb_sel_opts, &key);
+
+	// if we failed to get process or its binary (i.e. one of them is NULL),
+	// we have match only if there are no selector options or if selector
+	// operator is none.
+	if (!current || !bin)
+		return !selector_options || selector_options->op == op_filter_none;
+
 	if (selector_options) {
 		if (selector_options->op == op_filter_none)
 			return 1; // matchBinaries selector is empty <=> match
 
-		if (current->bin.path_length < 0) {
+		if (bin->path_length < 0) {
 			// something wrong happened when copying the filename to execve_map
 			return 0;
 		}
@@ -1899,7 +1912,7 @@ FUNC_INLINE int match_binaries(__u32 selidx, struct execve_map_value *current)
 		switch (selector_options->op) {
 		case op_filter_in:
 		case op_filter_notin:
-			update_mb_task(current);
+			update_mb_task(current, bin);
 
 			/* Check if we match the selector's bit in ->mb_bitset, which means that the
 			 * process matches a matchBinaries section with a followChidren:true
@@ -1907,15 +1920,15 @@ FUNC_INLINE int match_binaries(__u32 selidx, struct execve_map_value *current)
 			 * parent matched.
 			 */
 			if (selector_options->mbset_id != MBSET_INVALID_ID &&
-			    (current->bin.mb_bitset & (1UL << selector_options->mbset_id))) {
+			    (bin->mb_bitset & (1UL << selector_options->mbset_id))) {
 				found_key = (u8 *)0xbadc0ffee;
 				break;
 			}
 
-			path_map = map_lookup_elem(&tg_mb_paths, &selidx);
+			path_map = map_lookup_elem(&tg_mb_paths, &key);
 			if (!path_map)
 				return 0;
-			found_key = map_lookup_elem(path_map, current->bin.path);
+			found_key = map_lookup_elem(path_map, bin->path);
 			break;
 #ifdef __LARGE_BPF_PROG
 		case op_filter_str_prefix:
@@ -1928,8 +1941,8 @@ FUNC_INLINE int match_binaries(__u32 selidx, struct execve_map_value *current)
 			if (!prefix_key)
 				return 0;
 			memset(prefix_key, 0, sizeof(*prefix_key));
-			prefix_key->prefixlen = current->bin.path_length * 8; // prefixlen is in bits
-			if (probe_read(prefix_key->data, current->bin.path_length & (STRING_PREFIX_MAX_LENGTH - 1), current->bin.path) < 0)
+			prefix_key->prefixlen = bin->path_length * 8; // prefixlen is in bits
+			if (probe_read(prefix_key->data, bin->path_length & (STRING_PREFIX_MAX_LENGTH - 1), bin->path) < 0)
 				return 0;
 			found_key = map_lookup_elem(path_map, prefix_key);
 			break;
@@ -1938,18 +1951,18 @@ FUNC_INLINE int match_binaries(__u32 selidx, struct execve_map_value *current)
 			path_map = map_lookup_elem(&string_postfix_maps, &selector_options->map_id);
 			if (!path_map)
 				return 0;
-			if (current->bin.path_length < STRING_POSTFIX_MAX_MATCH_LENGTH)
-				postfix_len = current->bin.path_length;
+			if (bin->path_length < STRING_POSTFIX_MAX_MATCH_LENGTH)
+				postfix_len = bin->path_length;
 			postfix_key = (struct string_postfix_lpm_trie *)map_lookup_elem(&string_postfix_maps_heap, &zero);
 			if (!postfix_key)
 				return 0;
 			postfix_key->prefixlen = postfix_len * 8; // prefixlen is in bits
-			if (!current->bin.reversed) {
-				file_copy_reverse((__u8 *)current->bin.end_r, postfix_len, (__u8 *)current->bin.end, current->bin.path_length - postfix_len);
-				current->bin.reversed = true;
+			if (!bin->reversed) {
+				file_copy_reverse((__u8 *)bin->end_r, postfix_len, (__u8 *)bin->end, bin->path_length - postfix_len);
+				bin->reversed = true;
 			}
 			if (postfix_len < STRING_POSTFIX_MAX_MATCH_LENGTH)
-				if (probe_read(postfix_key->data, postfix_len, current->bin.end_r) < 0)
+				if (probe_read(postfix_key->data, postfix_len, bin->end_r) < 0)
 					return 0;
 			found_key = map_lookup_elem(path_map, postfix_key);
 			break;
@@ -1963,7 +1976,7 @@ FUNC_INLINE int match_binaries(__u32 selidx, struct execve_map_value *current)
 		return is_not_operator(selector_options->op) ? !match : match;
 	}
 
-	// no matchBinaries selector <=> match
+	// no selector <=> match
 	return 1;
 }
 
@@ -1978,13 +1991,134 @@ get_arg(struct msg_generic_kprobe *e, __u32 index)
 	return &e->args[argoff];
 }
 
+FUNC_INLINE bool is_filter_arg_1(long type)
+{
+	switch (type) {
+	case cap_inh_ty:
+	case cap_prm_ty:
+	case cap_eff_ty:
+	case kernel_cap_ty:
+	case syscall64_type:
+	case s64_ty:
+	case u64_ty:
+	case size_type:
+	case int_type:
+	case s32_ty:
+	case u32_ty:
+#ifdef __LARGE_BPF_PROG
+	case s16_ty:
+	case u16_ty:
+	case s8_ty:
+	case u8_ty:
+#endif // __LARGE_BPF_PROG
+		return true;
+	default:
+		return false;
+	}
+}
+
+FUNC_INLINE long
+filter_arg_1(struct msg_generic_kprobe *e, struct selector_arg_filter *filter, char *args)
+{
+	switch (filter->type) {
+	case cap_inh_ty:
+	case cap_prm_ty:
+	case cap_eff_ty:
+	case kernel_cap_ty:
+#ifdef __LARGE_BPF_PROG
+		if (filter->op == op_capabilities_gained) {
+			__u64 cap_old = *(__u64 *)args;
+			__u32 index2 = *((__u32 *)&filter->value);
+			__u64 cap_new = *(__u64 *)get_arg(e, index2);
+
+			return !!((cap_old ^ cap_new) & cap_new);
+		}
+		fallthrough;
+#endif
+	case syscall64_type:
+	case s64_ty:
+	case u64_ty:
+		return filter_64ty(filter, args);
+	case size_type:
+	case int_type:
+	case s32_ty:
+	case u32_ty:
+		return filter_32ty(filter, args);
+#ifdef __LARGE_BPF_PROG
+	case s16_ty:
+	case u16_ty:
+		return filter_16ty(filter, args);
+	case s8_ty:
+	case u8_ty:
+		return filter_8ty(filter, args);
+#endif // __LARGE_BPF_PROG
+	default:
+		return 1;
+	}
+}
+
+FUNC_INLINE long
+filter_arg_2(struct msg_generic_kprobe *e, struct selector_arg_filter *filter, char *args)
+{
+	switch (filter->type) {
+	case fd_ty:
+		/* Advance args past fd */
+		args += 4;
+		fallthrough;
+	case file_ty:
+	case path_ty:
+	case dentry_type:
+#ifdef __LARGE_BPF_PROG
+	case linux_binprm_type:
+#endif
+		return filter_file_buf(filter, (struct string_buf *)args);
+	case string_type:
+	case net_dev_ty:
+	case data_loc_type:
+		/* for strings, we just encode the length */
+		return filter_char_buf(filter, args, 4);
+	case char_buf:
+		/* for buffers, we just encode the expected length and the
+		 * length that was actually read (see: __copy_char_buf)
+		 */
+		return filter_char_buf(filter, args, 8);
+	case skb_type:
+	case sock_type:
+	case socket_type:
+	case sockaddr_type:
+		return filter_inet(filter, args);
+	default:
+		return 1;
+	}
+}
+
+FUNC_INLINE long
+filter_arg(struct msg_generic_kprobe *e, struct selector_arg_filter *filter, char *args, int arg)
+{
+	/*
+	 * Separate argument filtering based on the process const
+	 * for 4.19 kernels..
+	 */
+	if (arg == __FILTER_ARG_1)
+		return filter_arg_1(e, filter, args);
+	if (arg == __FILTER_ARG_2)
+		return filter_arg_2(e, filter, args);
+
+	/* .. and the rest of the world (i.e., process == __FILTER_ARG_ALL) */
+	if (is_filter_arg_1(filter->type))
+		return filter_arg_1(e, filter, args);
+	else
+		return filter_arg_2(e, filter, args);
+}
+
 FUNC_INLINE int
-selector_arg_offset(__u8 *f, struct msg_generic_kprobe *e, __u32 selidx,
-		    bool is_entry)
+selector_arg_offset(void *ctx, struct bpf_map_def *tailcalls,
+		    __u8 *f, struct msg_generic_kprobe *e, __u32 selidx,
+		    bool is_entry, int arg)
 {
 	struct selector_arg_filters *filters;
 	struct selector_arg_filter *filter;
-	long seloff, argsoff, pass = 1, margsoff;
+	long seloff, argsoff, margsoff;
 	__u32 i = 0, index;
 	char *args;
 
@@ -2027,88 +2161,28 @@ selector_arg_offset(__u8 *f, struct msg_generic_kprobe *e, __u32 selidx,
 			     : [argsoff] "+r"(argsoff));
 
 		if (argsoff <= 0)
-			return pass ? seloff : 0;
+			return seloff;
 
 		margsoff = (seloff + argsoff) & INDEX_MASK;
 		filter = (struct selector_arg_filter *)&f[margsoff];
 
+#ifndef __LARGE_BPF_PROG
+		// if, in the future, 4.19 supports multiple filters, we
+		// will need to adjust this to cope with resuming this loop
+		// on the iteration where we left off prior to tail call
+		if (!is_filter_arg_1(filter->type) && arg == __FILTER_ARG_1)
+			tail_call(ctx, tailcalls, TAIL_CALL_ARGS_2);
+#endif
+
 		index = filter->index;
-		if (index > 5)
+		if (index >= 5)
 			return 0;
 
 		args = get_arg(e, index);
-		switch (filter->type) {
-		case fd_ty:
-			/* Advance args past fd */
-			args += 4;
-			fallthrough;
-		case file_ty:
-		case path_ty:
-		case dentry_type:
-#ifdef __LARGE_BPF_PROG
-		case linux_binprm_type:
-#endif
-			pass &= filter_file_buf(filter, (struct string_buf *)args);
-			break;
-		case string_type:
-		case net_dev_ty:
-		case data_loc_type:
-			/* for strings, we just encode the length */
-			pass &= filter_char_buf(filter, args, 4);
-			break;
-		case char_buf:
-			/* for buffers, we just encode the expected length and the
-			 * length that was actually read (see: __copy_char_buf)
-			 */
-			pass &= filter_char_buf(filter, args, 8);
-			break;
-		case cap_inh_ty:
-		case cap_prm_ty:
-		case cap_eff_ty:
-		case kernel_cap_ty:
-#ifdef __LARGE_BPF_PROG
-			if (filter->op == op_capabilities_gained) {
-				__u64 cap_old = *(__u64 *)args;
-				__u32 index2 = *((__u32 *)&filter->value);
-				__u64 cap_new = *(__u64 *)get_arg(e, index2);
-
-				pass = !!((cap_old ^ cap_new) & cap_new);
-				break;
-			}
-			fallthrough;
-#endif
-		case syscall64_type:
-		case s64_ty:
-		case u64_ty:
-			pass &= filter_64ty(filter, args);
-			break;
-		case size_type:
-		case int_type:
-		case s32_ty:
-		case u32_ty:
-			pass &= filter_32ty(filter, args);
-			break;
-#ifdef __LARGE_BPF_PROG
-		case s16_ty:
-		case u16_ty:
-			pass &= filter_16ty(filter, args);
-			break;
-		case s8_ty:
-		case u8_ty:
-			pass &= filter_8ty(filter, args);
-			break;
-#endif // __LARGE_BPF_PROG
-		case skb_type:
-		case sock_type:
-		case socket_type:
-		case sockaddr_type:
-			pass &= filter_inet(filter, args);
-			break;
-		default:
-			break;
-		}
+		if (!filter_arg(e, filter, args, arg))
+			return 0;
 	}
-	return pass ? seloff : 0;
+	return seloff;
 }
 
 FUNC_INLINE int filter_args_reject(u64 id)

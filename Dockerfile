@@ -20,14 +20,14 @@ RUN make tetragon-bpf LOCAL_CLANG=1 TARGET_ARCH=$TARGETARCH
 RUN if [ "$COMPRESS_BPF" = "gzip" ]; then gzip bpf/objs/*.o; fi
 
 # Second builder (cross-)compile tetragon and tetra
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.25.5@sha256:20b91eda7a9627c127c0225b0d4e8ec927b476fa4130c6760928b849d769c149 AS tetragon-builder
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.25.6@sha256:fc24d3881a021e7b968a4610fc024fba749f98fe5c07d4f28e6cfa14dc65a84c AS tetragon-builder
 WORKDIR /go/src/github.com/cilium/tetragon
 ARG TETRAGON_VERSION TARGETARCH
 COPY . .
 RUN make VERSION=$TETRAGON_VERSION TARGET_ARCH=$TARGETARCH tetragon tetra
 
 # Third builder (cross-)compile a stripped gops
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.25.5-alpine@sha256:26111811bc967321e7b6f852e914d14bede324cd1accb7f81811929a6a57fea9 AS gops
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.25.6-alpine@sha256:bc2596742c7a01aa8c520a075515c7fee21024b05bfaa18bd674fe82c100a05d AS gops
 ARG TARGETARCH
 RUN apk add --no-cache git \
 # renovate: datasource=github-releases depName=google/gops
@@ -84,7 +84,7 @@ RUN curl -L https://github.com/libbpf/bpftool/releases/download/${BPFTOOL_TAG}/b
 
 # Get bash-completion manifests and generate tetra CLI bash
 # autocompletions (we don't want all bash-completions in the base-build)
-FROM docker.io/library/alpine:3.23.2@sha256:865b95f46d98cf867a156fe4a135ad3fe50d2056aa3f25ed31662dff6da4eb62 AS cli-autocomplete
+FROM docker.io/library/alpine:3.23.3@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659 AS cli-autocomplete
 COPY --from=tetragon-builder /go/src/github.com/cilium/tetragon/tetra /usr/bin/
 RUN apk add --no-cache bash-completion && \
     tetra completion bash > /etc/bash_completion.d/tetra && \
@@ -92,7 +92,7 @@ RUN apk add --no-cache bash-completion && \
 
 # Almost final step runs on target platform (might need emulation) and
 # retrieves (cross-)compiled binaries from builders
-FROM docker.io/library/alpine:3.23.2@sha256:865b95f46d98cf867a156fe4a135ad3fe50d2056aa3f25ed31662dff6da4eb62 AS base-build
+FROM docker.io/library/alpine:3.23.3@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659 AS base-build
 RUN apk add --no-cache iproute2
 RUN mkdir /var/lib/tetragon/ && \
     mkdir -p /etc/tetragon/tetragon.conf.d/ && \

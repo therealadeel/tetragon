@@ -459,7 +459,7 @@ spec:
 		//     "pop    %rbp\n"         /* +14 5d             */
 		//     "ret\n"                 /* +15 c3             */
 		//
-		// Make sure we retrieve data with eax value (1) as int argument.
+		// Make sure we retrieve data with eax value (3) as int argument.
 		symbol = "test_1+14"
 		pathHook += `
     symbols:
@@ -470,8 +470,24 @@ spec:
       source: "pt_regs"
       resolve: "eax"`
 	case "arm64":
-		// unlike x86, general purpose registers are stored in an array
-		t.Skip("unable to resolve general purpose registers on arm64")
+		// Put uprobe in test_1 function at:
+		//
+		//   a9bf7bfd        stp     x29, x30, [sp, #-16]!
+		//   910003fd        mov     x29, sp
+		//   52800020        mov     w0, #0x1                        // #1
+		//   52800060   -->  mov     w0, #0x3                        // #3
+		//   a8c17bfd        ldp     x29, x30, [sp], #16
+		//   d65f03c0        ret
+		// Make sure we retrieve data with w0 value (3) as int argument.
+		symbol = "test_1+16"
+		pathHook += `
+    symbols:
+    - "` + symbol + `"
+    data:
+    - index: 0
+      type: "int"
+      source: "pt_regs"
+      resolve: "w0"`
 	}
 
 	pathConfigHook := []byte(pathHook)
@@ -514,23 +530,7 @@ spec:
 }
 
 func testUprobePtRegsMatch(t *testing.T, value int, expectFail bool) {
-	if runtime.GOARCH == "arm64" {
-		// unlike x86, general purpose registers are stored in an array
-		t.Skip("unable to resolve general purpose registers on arm64")
-	}
 	testBinary := testutils.RepoRootPath("contrib/tester-progs/regs-override")
-
-	// Put uprobe in test_1 function at:
-	//
-	//     "push   %rbp\n"         /* +0  55             */
-	//     "mov    %rsp,%rbp\n"    /* +1  48 89 e5       */
-	// --> "mov    $0x1,%eax\n"    /* +4  b8 01 00 00 00 */
-	//     "mov    $0x3,%eax\n"    /* +9  b8 03 00 00 00 */
-	//     "pop    %rbp\n"         /* +14 5d             */
-	//     "ret\n"                 /* +15 c3             */
-	//
-	// Make sure we retrieve data with eax value (1) as int argument
-	// and match the expected value via matchData.
 
 	pathHook := `
 apiVersion: cilium.io/v1alpha1
@@ -539,9 +539,27 @@ metadata:
   name: "uprobe"
 spec:
   uprobes:
-  - path: "` + testBinary + `"
+  - path: "` + testBinary + `"`
+
+	var symbol string
+
+	switch runtime.GOARCH {
+	case "amd64":
+		// Put uprobe in test_1 function at:
+		//
+		//     "push   %rbp\n"         /* +0  55             */
+		//     "mov    %rsp,%rbp\n"    /* +1  48 89 e5       */
+		// --> "mov    $0x1,%eax\n"    /* +4  b8 01 00 00 00 */
+		//     "mov    $0x3,%eax\n"    /* +9  b8 03 00 00 00 */
+		//     "pop    %rbp\n"         /* +14 5d             */
+		//     "ret\n"                 /* +15 c3             */
+		//
+		// Make sure we retrieve data with eax value (1) as int argument
+		// and match the expected value via matchData.
+		symbol = "test_1+9"
+		pathHook += `
     symbols:
-    - "test_1+9"
+    - "` + symbol + `"
     data:
     - index: 0
       type: "int"
@@ -552,8 +570,34 @@ spec:
       - index: 0
         operator: "Equal"
         values:
-        - "` + strconv.Itoa(value) + `"
-`
+        - "` + strconv.Itoa(value) + `"`
+	case "arm64":
+		// Put uprobe in test_1 function at:
+		//
+		//   a9bf7bfd        stp     x29, x30, [sp, #-16]!
+		//   910003fd        mov     x29, sp
+		//   52800020   -->  mov     w0, #0x1                        // #1
+		//   52800060        mov     w0, #0x3                        // #3
+		//   a8c17bfd        ldp     x29, x30, [sp], #16
+		//   d65f03c0        ret
+		// Make sure we retrieve data with w0 value (1) as int argument.
+		// and match the expected value via matchData.
+		symbol = "test_1+12"
+		pathHook += `
+    symbols:
+    - "` + symbol + `"
+    data:
+    - index: 0
+      type: "int"
+      source: "pt_regs"
+      resolve: "w0"
+    selectors:
+    - matchData:
+      - index: 0
+        operator: "Equal"
+        values:
+        - "` + strconv.Itoa(value) + `"`
+	}
 
 	pathConfigHook := []byte(pathHook)
 	err := os.WriteFile(testConfigFile, pathConfigHook, 0644)
@@ -564,7 +608,7 @@ spec:
 	upChecker := ec.NewProcessUprobeChecker("UPROBE_DATA_MATCH").
 		WithProcess(ec.NewProcessChecker().
 			WithBinary(sm.Full(testBinary))).
-		WithSymbol(sm.Full("test_1+9")).
+		WithSymbol(sm.Full(symbol)).
 		WithData(ec.NewKprobeArgumentListMatcher().
 			WithOperator(lc.Ordered).
 			WithValues(
@@ -600,4 +644,105 @@ func TestUprobePtRegsDataMatch(t *testing.T) {
 
 func TestUprobePtRegsDataNotMatch(t *testing.T) {
 	testUprobePtRegsMatch(t, 10, true)
+}
+
+func testUprobePtRegsPreload(t *testing.T, multi bool) {
+	if !bpf.HasKfunc("bpf_copy_from_user_str") {
+		t.Skip("skipping")
+	}
+
+	testBinary := testutils.RepoRootPath("contrib/tester-progs/regs-override")
+
+	disableUprobeMulti := ""
+
+	if !multi {
+		disableUprobeMulti = `
+  options:
+    - name: "disable-uprobe-multi"
+      value: "1"`
+	}
+
+	// Put uprobe in test_3 function at:
+	//
+	//      static const char *test_3_string = "test_3_string_CASE";
+	//
+	//      "push   %%rbp\n"          /* +0  55                            */
+	//      "mov    %%rsp, %%rbp\n"   /* +1  48 89 e5                      */
+	//      "mov    %[str], %%rdi\n"  /* +4  48 8b 3d 96 2e 00 00          */
+	//      "pop    %%rbp\n"          /* +11 5d                            */
+	// -->  "mov    $0x0,%%rax\n"     /* +12 48 c7 c0 00 00 00 00          */
+	//      "mov    $0xff,%%rax\n"    /* +19 48 c7 c0 ff 00 00 00          */
+	//      "ret\n"                   /* +26 c3                            */
+	//      :
+	//      : [str] "m" (test_3_string)
+	//
+	// Make sure we retrieve data with eax value (1) as int argument
+	// and match the expected value via matchData.
+
+	pathHook := `
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "uprobe"
+spec: ` + disableUprobeMulti + `
+  uprobes:
+  - path: "` + testBinary + `"
+    symbols:
+    - "test_3+12"
+    data:
+    - index: 0
+      type: "string"
+      source: "pt_regs"
+      resolve: "rdi"
+`
+
+	pathConfigHook := []byte(pathHook)
+	err := os.WriteFile(testConfigFile, pathConfigHook, 0644)
+	if err != nil {
+		t.Fatalf("writeFile(%s): err %s", testConfigFile, err)
+	}
+
+	upChecker := ec.NewProcessUprobeChecker("UPROBE_DATA_MATCH").
+		WithProcess(ec.NewProcessChecker().
+			WithBinary(sm.Full(testBinary))).
+		WithSymbol(sm.Full("test_3+12")).
+		WithData(ec.NewKprobeArgumentListMatcher().
+			WithOperator(lc.Ordered).
+			WithValues(
+				ec.NewKprobeArgumentChecker().WithStringArg(sm.Full("test_3_string_CASE")),
+			))
+
+	checker := ec.NewUnorderedEventChecker(upChecker)
+
+	var doneWG, readyWG sync.WaitGroup
+	defer doneWG.Wait()
+
+	ctx, cancel := context.WithTimeout(context.Background(), tus.Conf().CmdWaitTime)
+	defer cancel()
+
+	obs, err := observertesthelper.GetDefaultObserverWithFile(t, ctx, testConfigFile, tus.Conf().TetragonLib)
+	if err != nil {
+		t.Fatalf("GetDefaultObserverWithFile error: %s", err)
+	}
+	observertesthelper.LoopEvents(ctx, t, &doneWG, &readyWG, obs)
+	readyWG.Wait()
+
+	cmd := exec.Command(testBinary, "3")
+	require.Error(t, cmd.Run())
+	require.Equal(t, 255, cmd.ProcessState.ExitCode())
+
+	err = jsonchecker.JsonTestCheck(t, checker)
+	require.NoError(t, err)
+}
+
+func TestUprobePtRegsPreload(t *testing.T) {
+	testUprobePtRegsPreload(t, false)
+}
+
+func TestUprobePtRegsPreloadMulti(t *testing.T) {
+	if !bpf.HasUprobeMulti() {
+		t.Skip("skipping preload test for uprobe multi, it is not supported in kernel")
+	}
+
+	testUprobePtRegsPreload(t, true)
 }

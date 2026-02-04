@@ -11,14 +11,19 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/cilium/ebpf"
 	lru "github.com/hashicorp/golang-lru/v2"
 
+	"github.com/cilium/tetragon/pkg/cgtracker"
+
 	"github.com/cilium/tetragon/pkg/asm"
 	"github.com/cilium/tetragon/pkg/metrics/kprobemetrics"
+
+	"github.com/cilium/tetragon/pkg/k8s/apis/cilium.io/v1alpha1"
 
 	"github.com/cilium/tetragon/pkg/api/ops"
 	"github.com/cilium/tetragon/pkg/api/processapi"
@@ -29,7 +34,6 @@ import (
 	gt "github.com/cilium/tetragon/pkg/generictypes"
 	"github.com/cilium/tetragon/pkg/grpc/tracing"
 	"github.com/cilium/tetragon/pkg/idtable"
-	"github.com/cilium/tetragon/pkg/k8s/apis/cilium.io/v1alpha1"
 	"github.com/cilium/tetragon/pkg/logger"
 	"github.com/cilium/tetragon/pkg/logger/logfields"
 	"github.com/cilium/tetragon/pkg/observer"
@@ -209,12 +213,7 @@ func loadSingleUprobeSensor(uprobeEntry *genericUprobe, args sensors.LoadProbeAr
 		selector = uprobeEntry.loadArgs.selectors.entry
 	}
 	if selector != nil {
-		mapLoad = append(mapLoad, &program.MapLoad{
-			Name: "filter_map",
-			Load: func(m *ebpf.Map, _ string) error {
-				return m.Update(uint32(0), selector.Buffer(), ebpf.UpdateAny)
-			},
-		})
+		mapLoad = append(mapLoad, selectorsMaploads(selector, 0)...)
 
 		if load.SleepableOffload {
 			mapLoad = append(mapLoad,
@@ -311,12 +310,7 @@ func loadMultiUprobeSensor(ids []idtable.EntryID, args sensors.LoadProbeArgs) er
 			selector = uprobeEntry.loadArgs.selectors.entry
 		}
 		if selector != nil {
-			mapLoad = append(mapLoad, &program.MapLoad{
-				Name: "filter_map",
-				Load: func(m *ebpf.Map, _ string) error {
-					return m.Update(uint32(index), selector.Buffer(), ebpf.UpdateAny)
-				},
-			})
+			mapLoad = append(mapLoad, selectorsMaploads(selector, uint32(index))...)
 
 			if load.SleepableOffload {
 				mapLoad = append(mapLoad,
@@ -399,6 +393,7 @@ type addUprobeIn struct {
 
 type uprobeHas struct {
 	sleepableOffload bool
+	sleepablePreload bool
 }
 
 func createGenericUprobeSensor(
@@ -442,6 +437,10 @@ func createGenericUprobeSensor(
 	maps = append(maps, program.MapUserFrom(base.ExecveMap))
 	if config.EnableV511Progs() && !option.Config.UsePerfRingBuffer {
 		maps = append(maps, program.MapUserFrom(base.RingBufEvents))
+	}
+
+	if option.Config.ParentsMapEnabled {
+		maps = append(maps, program.MapUserFrom(base.ParentBinariesMap))
 	}
 
 	return &sensors.Sensor{
@@ -561,6 +560,8 @@ func addUprobe(spec *v1alpha1.UProbeSpec, ids []idtable.EntryID, in *addUprobeIn
 	addArg := func(i int, a *v1alpha1.KProbeArg, data bool) error {
 		argType := gt.GenericTypeFromString(a.Type)
 
+		var preload bool
+
 		if data {
 			// Data specific config
 			if hasPtRegsSource(a) {
@@ -570,6 +571,26 @@ func addUprobe(spec *v1alpha1.UProbeSpec, ids []idtable.EntryID, in *addUprobeIn
 				if !ok {
 					return fmt.Errorf("error: Failed to retrieve register argument '%s'", a.Resolve)
 				}
+
+				// If we are getting string type from pt_regs register we can safely assume
+				// it's from user address, so we need to read it through preload.
+				if argType == gt.GenericStringType {
+					if bpf.HasKfunc("bpf_copy_from_user_str") && runtime.GOARCH == "amd64" {
+						preload = true
+					} else {
+						logger.GetLogger().Warn("can't preload string argument, might be wrong")
+					}
+				}
+			} else if hasCurrentTaskSource(a) {
+				if !bpf.HasProgramLargeSize() {
+					return errors.New("error: Resolve flag can't be used for your kernel version. Please update to version 5.4 or higher or disable Resolve flag")
+				}
+				lastBTFType, btfArg, err := resolveBTFArg("", a, false)
+				if err != nil {
+					return fmt.Errorf("can't resolve current_task source: %s", a.Resolve)
+				}
+				allBTFArgs[i] = btfArg
+				argType = findTypeFromBTFType(a, lastBTFType)
 			}
 		} else {
 			// Args specific config
@@ -584,10 +605,12 @@ func addUprobe(spec *v1alpha1.UProbeSpec, ids []idtable.EntryID, in *addUprobeIn
 			}
 		}
 
+		has.sleepablePreload = has.sleepablePreload || preload
+
 		if argType == gt.GenericInvalidType {
 			return fmt.Errorf("Arg(%d) type '%s' unsupported", i, a.Type)
 		}
-		argMValue, err := getMetaValue(a)
+		argMValue, err := getUprobeMetaValue(a, preload)
 		if err != nil {
 			return err
 		}
@@ -622,7 +645,7 @@ func addUprobe(spec *v1alpha1.UProbeSpec, ids []idtable.EntryID, in *addUprobeIn
 
 	// Parse Data
 	for _, data := range spec.Data {
-		if !hasPtRegsSource(&data) {
+		if !hasPtRegsSource(&data) && !hasCurrentTaskSource(&data) {
 			return nil, fmt.Errorf("data argument has wrong source '%s'", data.Source)
 		}
 		if data.Resolve == "" {
@@ -797,6 +820,7 @@ func createMultiUprobeSensor(sensorPath string, multiIDs []idtable.EntryID, poli
 		SetPolicy(policyName)
 
 	load.SleepableOffload = has.sleepableOffload
+	load.SleepablePreload = has.sleepablePreload
 
 	progs = append(progs, load)
 
@@ -812,6 +836,16 @@ func createMultiUprobeSensor(sensorPath string, multiIDs []idtable.EntryID, poli
 		sleepableOffloadMap := program.MapBuilderProgram("sleepable_offload", load)
 		sleepableOffloadMap.SetMaxEntries(sleepableOffloadMaxEntries)
 		maps = append(maps, regsMap, sleepableOffloadMap)
+	}
+
+	if has.sleepablePreload {
+		sleepablePreloadMap := program.MapBuilderProgram("sleepable_preload", load)
+		sleepablePreloadMap.SetMaxEntries(sleepablePreloadMaxEntries)
+		maps = append(maps, sleepablePreloadMap)
+	}
+
+	if option.Config.EnableCgTrackerID {
+		maps = append(maps, program.MapUser(cgtracker.MapName, load))
 	}
 
 	filterMap.SetMaxEntries(len(multiIDs))
@@ -878,6 +912,7 @@ func createUprobeSensorFromEntry(uprobeEntry *genericUprobe,
 		SetPolicy(uprobeEntry.policyName)
 
 	load.SleepableOffload = has.sleepableOffload
+	load.SleepablePreload = has.sleepablePreload
 
 	progs = append(progs, load)
 
@@ -893,6 +928,16 @@ func createUprobeSensorFromEntry(uprobeEntry *genericUprobe,
 		sleepableOffloadMap := program.MapBuilderProgram("sleepable_offload", load)
 		sleepableOffloadMap.SetMaxEntries(sleepableOffloadMaxEntries)
 		maps = append(maps, regsMap, sleepableOffloadMap)
+	}
+
+	if has.sleepablePreload {
+		sleepablePreloadMap := program.MapBuilderProgram("sleepable_preload", load)
+		sleepablePreloadMap.SetMaxEntries(sleepablePreloadMaxEntries)
+		maps = append(maps, sleepablePreloadMap)
+	}
+
+	if option.Config.EnableCgTrackerID {
+		maps = append(maps, program.MapUser(cgtracker.MapName, load))
 	}
 
 	if uprobeEntry.loadArgs.retprobe {

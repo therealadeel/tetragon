@@ -14,6 +14,8 @@
 #include "generic_path.h"
 #include "bpf_ktime.h"
 #include "regs.h"
+#include "config.h"
+#include "uprobe_preload.h"
 
 #define MAX_TOTAL 9000
 
@@ -493,15 +495,25 @@ FUNC_INLINE void extract_arg(struct event_config *config, int index, unsigned lo
 			.btf_config = btf_config,
 			.arg = a,
 		};
+		int i;
+
+		if (CONFIG(ITER_NUM)) {
+			bpf_for(i, 0, MAX_BTF_ARG_DEPTH)
+			{
+				if (extract_arg_depth(i, &extract_data))
+					break;
+			}
+		} else {
 #ifndef __V61_BPF_PROG
 #pragma unroll
-		for (int i = 0; i < MAX_BTF_ARG_DEPTH; ++i) {
-			if (extract_arg_depth(i, &extract_data))
-				break;
-		}
+			for (i = 0; i < MAX_BTF_ARG_DEPTH; ++i) {
+				if (extract_arg_depth(i, &extract_data))
+					break;
+			}
 #else
-		loop(MAX_BTF_ARG_DEPTH, extract_arg_depth, &extract_data, 0);
+			loop(MAX_BTF_ARG_DEPTH, extract_arg_depth, &extract_data, 0);
 #endif /* __V61_BPF_PROG */
+		}
 	}
 }
 #else
@@ -544,7 +556,7 @@ FUNC_INLINE long get_pt_regs_arg_syscall(struct pt_regs *ctx, __u16 offset, __u8
 }
 
 // TODO let's unite this with read_reg in bpf/process/uprobe_offload.h
-#if defined(__TARGET_ARCH_x86) && (defined GENERIC_KPROBE || defined GENERIC_UPROBE)
+#if defined(GENERIC_KPROBE) || defined(GENERIC_UPROBE)
 FUNC_INLINE long get_pt_regs_arg(struct pt_regs *ctx, struct event_config *config, int index)
 {
 	struct config_reg_arg *reg;
@@ -567,6 +579,30 @@ FUNC_INLINE long get_pt_regs_arg(struct pt_regs *ctx, struct event_config *confi
 	return 0;
 }
 #endif /* __TARGET_ARCH_x86 && (GENERIC_KPROBE || GENERIC_UPROBE) */
+
+#if defined(GENERIC_UPROBE) && defined(__TARGET_ARCH_x86)
+FUNC_INLINE unsigned long get_pt_regs_preload_arg(struct pt_regs *ctx, long ty)
+{
+	unsigned long arg = 0;
+
+	if (ty == string_type) {
+		arg = preload_string_arg(ctx);
+
+		// Make verifier to believe it's just an ordinary number and not
+		// a pointer to the map. The rest of the argument code might do
+		// some arithmetics on it which would fail for pointer, but it's
+		// always using probe_read, so it's safe.
+		probe_read(&arg, sizeof(arg), &arg);
+	}
+
+	return arg;
+}
+#else
+FUNC_INLINE long get_pt_regs_preload_arg(struct pt_regs *ctx, long ty)
+{
+	return 0;
+}
+#endif
 
 FUNC_INLINE long generic_read_arg(void *ctx, int index, long off, struct bpf_map_def *tailcals,
 				  int process)
@@ -610,11 +646,14 @@ FUNC_INLINE long generic_read_arg(void *ctx, int index, long off, struct bpf_map
 	/* Getting argument data based on the source attribute, which is encoded
 	 * in argument meta data, so far it's either:
 	 *
+	 *   - pt_regs preloaded register
 	 *   - pt_regs register
 	 *   - current task object
 	 *   - real argument value
 	 */
-	if (am & ARGM_PT_REGS)
+	if (am & ARGM_PT_REGS_PRELOAD)
+		a = get_pt_regs_preload_arg(ctx, ty);
+	else if (am & ARGM_PT_REGS)
 		a = get_pt_regs_arg(ctx, config, arg_index);
 	else if (am & ARGM_CURRENT_TASK)
 		a = get_current_task();
@@ -1420,7 +1459,9 @@ FUNC_INLINE int generic_process_filter(void)
 	return PFILTER_CONTINUE; /* will iterate to the next selector */
 }
 
-FUNC_INLINE int filter_args(struct msg_generic_kprobe *e, int selidx, bool is_entry)
+FUNC_INLINE int filter_args(void *ctx, struct bpf_map_def *tailcalls,
+			    struct msg_generic_kprobe *e, int selidx, bool is_entry,
+			    int arg)
 {
 	__u8 *f;
 
@@ -1441,7 +1482,7 @@ FUNC_INLINE int filter_args(struct msg_generic_kprobe *e, int selidx, bool is_en
 		return filter_args_reject(e->func_id);
 
 	if (e->sel.active[selidx]) {
-		int pass = selector_arg_offset(f, e, selidx, is_entry);
+		int pass = selector_arg_offset(ctx, tailcalls, f, e, selidx, is_entry, arg);
 
 		if (pass)
 			return pass;
@@ -1490,7 +1531,7 @@ FUNC_INLINE int next_selidx(struct msg_generic_kprobe *e, int selidx)
 }
 
 FUNC_INLINE long generic_filter_arg(void *ctx, struct bpf_map_def *tailcalls,
-				    bool is_entry)
+				    bool is_entry, int arg)
 {
 	struct msg_generic_kprobe *e;
 	int selidx, pass, zero = 0;
@@ -1499,7 +1540,8 @@ FUNC_INLINE long generic_filter_arg(void *ctx, struct bpf_map_def *tailcalls,
 	if (!e)
 		return 0;
 	selidx = e->tailcall_index_selector;
-	pass = filter_args(e, selidx & MAX_SELECTORS_MASK, is_entry);
+	pass = filter_args(ctx, tailcalls, e, selidx & MAX_SELECTORS_MASK,
+			   is_entry, arg);
 	if (!pass) {
 		selidx = next_selidx(e, selidx);
 		if (selidx <= MAX_SELECTORS) {

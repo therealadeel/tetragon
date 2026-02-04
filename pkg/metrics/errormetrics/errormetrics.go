@@ -19,21 +19,21 @@ type ErrorType int
 
 const (
 	// Tid and Pid mismatch that could affect BPF and user space caching logic
-	ProcessPidTidMismatch ErrorType = iota
+	ProcessPidTidMismatchExec ErrorType = iota
+	ProcessPidTidMismatchClone
+	ProcessPidTidMismatchExit
 	// An event finalizer on Process failed
 	EventFinalizeProcessInfoFailed
 	// Failed to resolve Process uid to username
 	ProcessMetadataUsernameFailed
-	// The username resolution was skipped since the process is not in host
-	// namespaces.
-	ProcessMetadataUsernameIgnoredNotInHost
 )
 
 var errorTypeLabelValues = map[ErrorType]string{
-	ProcessPidTidMismatch:                   "process_pid_tid_mismatch",
-	EventFinalizeProcessInfoFailed:          "event_finalize_process_info_failed",
-	ProcessMetadataUsernameFailed:           "process_metadata_username_failed",
-	ProcessMetadataUsernameIgnoredNotInHost: "process_metadata_username_ignored_not_in_host_namespaces",
+	ProcessPidTidMismatchExec:      "process_pid_tid_mismatch_exec",
+	ProcessPidTidMismatchClone:     "process_pid_tid_mismatch_clone",
+	ProcessPidTidMismatchExit:      "process_pid_tid_mismatch_exit",
+	EventFinalizeProcessInfoFailed: "event_finalize_process_info_failed",
+	ProcessMetadataUsernameFailed:  "process_metadata_username_failed",
 }
 
 func (e ErrorType) String() string {
@@ -61,7 +61,7 @@ func (e EventHandlerError) String() string {
 var (
 	// Constrained label for error type
 	errorTypeLabel = metrics.ConstrainedLabel{
-		Name:   "type",
+		Name:   "error",
 		Values: slices.Collect(maps.Values(errorTypeLabelValues)),
 	}
 	// Constrained label for opcode (numeric strings)
@@ -80,7 +80,7 @@ var (
 	}
 	// Constrained label for handler error type
 	handlerErrTypeLabel = metrics.ConstrainedLabel{
-		Name:   "error_type",
+		Name:   "error",
 		Values: slices.Collect(maps.Values(eventHandlerErrorLabelValues)),
 	}
 
@@ -106,6 +106,7 @@ var (
 func RegisterMetrics(group metrics.Group) {
 	group.MustRegister(ErrorTotal)
 	group.MustRegister(HandlerErrors)
+	group.MustRegister(DebugTotal)
 }
 
 func InitMetrics() {
@@ -121,6 +122,10 @@ func InitMetrics() {
 	// NB: We initialize only ops.MSG_OP_UNDEF here, but unknown_opcode can occur for any opcode
 	// that is not explicitly handled.
 	GetHandlerErrors(ops.MSG_OP_UNDEF, HandlePerfUnknownOp).Add(0)
+
+	for er := range debugTypeLabelValues {
+		GetDebugTotal(er).Add(0)
+	}
 }
 
 // Get a new handle on an ErrorTotal metric for an ErrorType

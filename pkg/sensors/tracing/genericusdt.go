@@ -14,6 +14,10 @@ import (
 
 	"github.com/cilium/ebpf"
 
+	"github.com/cilium/tetragon/pkg/cgtracker"
+
+	"github.com/cilium/tetragon/pkg/k8s/apis/cilium.io/v1alpha1"
+
 	"github.com/cilium/tetragon/pkg/api/ops"
 	api "github.com/cilium/tetragon/pkg/api/tracingapi"
 	"github.com/cilium/tetragon/pkg/bpf"
@@ -22,7 +26,6 @@ import (
 	gt "github.com/cilium/tetragon/pkg/generictypes"
 	"github.com/cilium/tetragon/pkg/grpc/tracing"
 	"github.com/cilium/tetragon/pkg/idtable"
-	"github.com/cilium/tetragon/pkg/k8s/apis/cilium.io/v1alpha1"
 	"github.com/cilium/tetragon/pkg/logger"
 	"github.com/cilium/tetragon/pkg/logger/logfields"
 	"github.com/cilium/tetragon/pkg/observer"
@@ -133,6 +136,10 @@ func createGenericUsdtSensor(
 		maps = append(maps, program.MapUserFrom(base.RingBufEvents))
 	}
 
+	if option.Config.ParentsMapEnabled {
+		maps = append(maps, program.MapUserFrom(base.ParentBinariesMap))
+	}
+
 	return &sensors.Sensor{
 		Name:      name,
 		Progs:     progs,
@@ -174,6 +181,10 @@ func createMultiUsdtSensor(multiIDs []idtable.EntryID, policyName string, hasSle
 		sleepableOffloadMap := program.MapBuilderProgram("write_offload", load)
 		sleepableOffloadMap.SetMaxEntries(sleepableOffloadMaxEntries)
 		maps = append(maps, sleepableOffloadMap)
+	}
+
+	if option.Config.EnableCgTrackerID {
+		maps = append(maps, program.MapUser(cgtracker.MapName, load))
 	}
 
 	return progs, maps, nil
@@ -230,6 +241,10 @@ func createUsdtSensorFromEntry(usdtEntry *genericUsdt,
 		sleepableOffloadMap := program.MapBuilderProgram("write_offload", load)
 		sleepableOffloadMap.SetMaxEntries(sleepableOffloadMaxEntries)
 		maps = append(maps, sleepableOffloadMap)
+	}
+
+	if option.Config.EnableCgTrackerID {
+		maps = append(maps, program.MapUser(cgtracker.MapName, load))
 	}
 
 	return progs, maps

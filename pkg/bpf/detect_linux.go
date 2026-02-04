@@ -35,6 +35,11 @@ type Feature struct {
 	detected bool
 }
 
+type FeatureKfuncs struct {
+	mu sync.Mutex
+	md map[string]bool
+}
+
 var (
 	kprobeMulti            Feature
 	uprobeMulti            Feature
@@ -49,6 +54,7 @@ var (
 	uprobeRefCtrOffset     Feature
 	auditLoginuid          Feature
 	uprobeRegsChange       Feature
+	kfuncs                 FeatureKfuncs
 )
 
 func HasOverrideHelper() bool {
@@ -518,20 +524,23 @@ func HasUprobeRefCtrOffset() bool {
 	return uprobeRefCtrOffset.detected
 }
 
-func detectAuditLoginuid() bool {
-	if kernels.MinKernelVersion("5.1") && kernels.DetectConfig(kernels.CONFIG_AUDIT) {
-		return true
-	} else if kernels.DetectConfig(kernels.CONFIG_AUDITSYSCALL) {
-		return true
-	}
-
-	_, err := os.Stat("/proc/self/loginuid")
-	return err == nil
-}
-
 func detectAuditLoginuidOnce() {
 	auditLoginuid.init.Do(func() {
-		auditLoginuid.detected = detectAuditLoginuid()
+		cfg := kernels.CONFIG_AUDITSYSCALL
+		if kernels.MinKernelVersion("5.1") {
+			cfg = kernels.CONFIG_AUDIT
+		}
+		if ok, errConfig := kernels.DetectConfig(cfg); ok {
+			auditLoginuid.detected = true
+		} else if _, errStat := os.Stat("/proc/self/loginuid"); errStat == nil {
+			auditLoginuid.detected = true
+		} else {
+			if errConfig != nil {
+				logger.GetLogger().Info("failed to detect config and to stat loginuid", "config_error", errConfig, "config", string(cfg), "stat_error", errStat)
+			} else {
+				logger.GetLogger().Info("failed to stat loginuid", logfields.Error, errStat)
+			}
+		}
 	})
 }
 
@@ -567,6 +576,37 @@ func detectUprobeRegsChangeOnce() {
 func HasUprobeRegsChange() bool {
 	detectUprobeRegsChangeOnce()
 	return uprobeRegsChange.detected
+}
+
+func detectKfunc(name string) bool {
+	spec, err := btf.NewBTF()
+	if err != nil {
+		return false
+	}
+
+	var fn *ebtf.Func
+	if err := spec.TypeByName(name, &fn); err != nil {
+		return false
+	}
+
+	// kfunc has bpf_kfunc tag attached
+	return len(fn.Tags) == 1 && fn.Tags[0] == "bpf_kfunc"
+}
+
+func HasKfunc(name string) bool {
+	kfuncs.mu.Lock()
+	defer kfuncs.mu.Unlock()
+
+	if kfuncs.md == nil {
+		kfuncs.md = make(map[string]bool)
+	}
+
+	detected, ok := kfuncs.md[name]
+	if !ok {
+		detected = detectKfunc(name)
+		kfuncs.md[name] = detected
+	}
+	return detected
 }
 
 func LogFeatures() string {
