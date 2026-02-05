@@ -37,7 +37,7 @@ type PolicyStatus struct {
 
 // HealthReport represents the health status report
 type HealthReport struct {
-	Status            string         `json:"status"`
+	Status            string         `json:"status"` // "healthy" or "degraded:<reason>"
 	PolicyDisplayName string         `json:"policy_display_name"`
 	PolicySha256      string         `json:"policy_sha256"`
 	TetragonVersion   string         `json:"tetragon_version"`

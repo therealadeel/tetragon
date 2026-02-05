@@ -97,7 +97,7 @@ control-plane-client/
   - Policy SHA256 hash
   - Tetragon server version
   - Status of all loaded policies with detailed logging
-- Reports "healthy" or "degraded" based on policy state
+- Reports "healthy" or "degraded:<reason>" based on policy state and sync/validation signals
 - Checks for `TP_STATE_ENABLED` status
 - Logs all data being sent before API call for debugging
 
@@ -418,10 +418,15 @@ When `cleanup_existing: true`, the client deletes all existing Tetragon policies
 
 ### Health Status Determination
 
-The client reports "degraded" if any policy has:
-- `state != "TP_STATE_ENABLED"` (protobuf enum string)
+The client reports `"degraded:<reason>"` when a degraded condition is detected, such as:
+- Policy validation failure (`policy_load_err`)
+- Tetragon policy status unavailable (`tetragon_unavailable`)
+- Policy state not enabled (`policy_state_err`)
+- Policy count mismatch (`policy_count_mismatch`)
+- Policy sync 404 (`policy_sync_not_found`)
+- Metrics scrape error (`metrics_scrape_err`)
 
-Otherwise, reports "healthy". Policy `error` strings are logged for diagnostics but do not change the overall status unless the state transitions away from `TP_STATE_ENABLED`.
+Otherwise, reports `"healthy"`. Policy `error` strings are logged for diagnostics but do not change the overall status unless the state transitions away from `TP_STATE_ENABLED`.
 
 ## Files Status
 

@@ -13,14 +13,26 @@ type PolicySyncError struct {
 	Timestamp  time.Time
 }
 
+type PolicyLoadError struct {
+	Message   string
+	Timestamp time.Time
+}
+
+type MetricsScrapeError struct {
+	Message   string
+	Timestamp time.Time
+}
+
 type Cache struct {
-	mu                sync.RWMutex
-	clientID          string
-	policyDisplayName string
-	policySha256      string
-	policyInventory   map[string]policy.Metadata // key -> metadata
-	policyCount       int
-	policySyncError   *PolicySyncError
+	mu                 sync.RWMutex
+	clientID           string
+	policyDisplayName  string
+	policySha256       string
+	policyInventory    map[string]policy.Metadata // key -> metadata
+	policyCount        int
+	policySyncError    *PolicySyncError
+	policyLoadError    *PolicyLoadError
+	metricsScrapeError *MetricsScrapeError
 }
 
 func NewCache() *Cache {
@@ -72,6 +84,8 @@ func (c *Cache) Clear() {
 	c.policyInventory = nil
 	c.policyCount = 0
 	c.policySyncError = nil
+	c.policyLoadError = nil
+	c.metricsScrapeError = nil
 }
 
 func (c *Cache) GetPolicyCount() int {
@@ -126,4 +140,48 @@ func (c *Cache) ClearPolicySyncError() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.policySyncError = nil
+}
+
+func (c *Cache) GetPolicyLoadError() (PolicyLoadError, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.policyLoadError == nil {
+		return PolicyLoadError{}, false
+	}
+	return *c.policyLoadError, true
+}
+
+func (c *Cache) SetPolicyLoadError(err PolicyLoadError) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	copy := err
+	c.policyLoadError = &copy
+}
+
+func (c *Cache) ClearPolicyLoadError() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.policyLoadError = nil
+}
+
+func (c *Cache) GetMetricsScrapeError() (MetricsScrapeError, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.metricsScrapeError == nil {
+		return MetricsScrapeError{}, false
+	}
+	return *c.metricsScrapeError, true
+}
+
+func (c *Cache) SetMetricsScrapeError(err MetricsScrapeError) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	copy := err
+	c.metricsScrapeError = &copy
+}
+
+func (c *Cache) ClearMetricsScrapeError() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.metricsScrapeError = nil
 }

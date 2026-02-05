@@ -38,16 +38,17 @@ POST /clients/{client_id}/metrics
 |-------|------|----------|-------------|
 | `format` | string | Yes | Format of the payload (currently `prometheus`) |
 | `endpoint` | string | Yes | Source URL that was scraped. Set this to a remote host if Tetragon runs elsewhere. |
-| `payload` | string | Yes | Raw metrics payload, exactly as returned by the scrape endpoint |
+| `payload` | string | Yes | Raw metrics payload, exactly as returned by the scrape endpoint (empty when scraping fails) |
 | `timestamp` | string | Yes | ISO 8601 timestamp indicating when the metrics were collected |
 
 ## Collection Flow
 
 1. The metrics publisher issues an HTTP GET to the configured `metrics_publishing.endpoint`.
 2. TLS verification can be disabled per config for development/testing (not recommended for production).
-3. The payload is streamed as-is into a `MetricsReport`.
-4. The client sends the report to the management API using the standard retry policy.
-5. Consecutive scrape or publication errors trigger exponential backoff before the next attempt.
+3. On success, the payload is streamed as-is into a `MetricsReport`.
+4. On scrape failure, the client logs a warning, sends an empty payload, and health reporting marks `"degraded:metrics_scrape_err"`.
+5. The client sends the report to the management API using the standard retry policy.
+6. Consecutive publication errors trigger exponential backoff before the next attempt.
 
 ## Configuration
 

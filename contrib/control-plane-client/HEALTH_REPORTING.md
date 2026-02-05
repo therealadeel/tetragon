@@ -20,7 +20,7 @@ POST /clients/{client_id}/health
 
 ```json
 {
-  "status": "healthy", // or degraded
+  "status": "healthy", // or degraded:<reason>
   "policy_display_name": "2024-12-11-14:30-a3f2e8b9c1d4",
   "policy_sha256": "a3f2e8b9c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c2d4e6f8a0b2c4d6e8f0",
   "tetragon_version": "v1.2.3",
@@ -54,7 +54,7 @@ POST /clients/{client_id}/health
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `status` | string | Yes | Overall health status: `"healthy"` or `"degraded"` |
+| `status` | string | Yes | Overall health status: `"healthy"` or `"degraded:<reason>"` |
 | `policy_display_name` | string | Yes | Human-friendly identifier for current policy set (e.g., timestamp + short hash) |
 | `policy_sha256` | string | Yes | Full SHA256 hash of currently applied policies |
 | `tetragon_version` | string | Yes | Version of Tetragon server (e.g., "v1.2.3" or "unknown" if unavailable) |
@@ -93,10 +93,24 @@ The overall `status` field is determined by the following logic:
 ```go
 status = "healthy"  // Start with healthy assumption
 
+if policy_load_error:
+    status = "degraded:policy_load_err"
+
+if policy_statuses_unavailable and status == "healthy":
+    status = "degraded:tetragon_unavailable"
+
 for each policy in policies:
-    if policy.state != "TP_STATE_ENABLED":
-        status = "degraded"
-        break  // Stop checking, already degraded
+    if policy.state != "TP_STATE_ENABLED" and status == "healthy":
+        status = "degraded:policy_state_err"
+
+if expected_policy_count > 0 and actual_policy_count != expected_policy_count and status == "healthy":
+    status = "degraded:policy_count_mismatch"
+
+if last_policy_sync_status == 404 and status == "healthy":
+    status = "degraded:policy_sync_not_found"
+
+if metrics_scrape_error and status == "healthy":
+    status = "degraded:metrics_scrape_err"
 ```
 
 ### Status Values
@@ -106,17 +120,23 @@ for each policy in policies:
 - No policies have non-empty `error` fields
 - Tetragon is operational and all policies are functioning correctly
 
-**`"degraded"`**:
-- At least one policy has `state != "TP_STATE_ENABLED"`
-- Indicates partial system functionality
-- Some policies may be failing, loading, or disabled
+**`"degraded:<reason>"`** (first applicable reason wins):
+- `policy_load_err`: policy bundle failed validation before apply
+- `tetragon_unavailable`: unable to retrieve policy status from Tetragon
+- `policy_state_err`: at least one policy has `state != "TP_STATE_ENABLED"`
+- `policy_count_mismatch`: expected policy count does not match Tetragon
+- `policy_sync_not_found`: last policy sync returned HTTP 404
+- `metrics_scrape_err`: unable to scrape metrics endpoint for publishing
 
 ### Edge Cases
 
 1. **No Policies**: If `policies` array is empty, status is `"healthy"` (no policies to fail)
 2. **Tetragon Version Unknown**: Version field set to `"unknown"`, but doesn't affect health status
 3. **Policy Errors**: Non-empty `error` field doesn't automatically set degraded status, only `state` matters
-4. **Policy Sync 404**: If the last policy sync failed with HTTP 404 (e.g., no active policy for the configured environment), status is `"degraded"`
+4. **Policy Load Error**: If policy validation fails, status is `"degraded:policy_load_err"`
+5. **Tetragon Unavailable**: If policy status cannot be retrieved, status is `"degraded:tetragon_unavailable"`
+6. **Policy Sync 404**: If the last policy sync failed with HTTP 404 (e.g., no active policy for the configured environment), status is `"degraded:policy_sync_not_found"`
+7. **Metrics Scrape Error**: If metrics scraping fails, status is `"degraded:metrics_scrape_err"`
 
 ## Data Collection Process
 
@@ -134,7 +154,7 @@ for each policy in policies:
    ```
    - Retrieves all loaded policies from Tetragon gRPC API
    - Converts each policy to simplified `PolicyStatus` format
-   - If fails: returns error, health report not sent
+   - If fails: logs warning, reports health with `"degraded:tetragon_unavailable"` and empty policies
 
 3. **Cached Policy Information**:
    ```
@@ -147,7 +167,7 @@ for each policy in policies:
 4. **Status Determination**:
    - Iterates through all policy statuses
    - Checks each `state` field
-   - Sets `"degraded"` on first non-enabled policy
+   - Sets `"degraded:<reason>"` on first degraded reason
    - Logs warning for degraded policies
 
 5. **Report Transmission**:
@@ -182,7 +202,7 @@ DEBUG policy 1: name=network-policy, state=TP_STATE_ENABLED, error=
 When a policy is not enabled:
 
 ```
-WARN policy file-monitoring state is TP_STATE_LOADING (not TP_STATE_ENABLED), marking as degraded
+WARN policy file-monitoring state is TP_STATE_LOADING (not TP_STATE_ENABLED), marking as degraded:policy_state_err
 ```
 
 ### After Success
@@ -202,7 +222,6 @@ Errors are tracked and cause exponential backoff on the next health reporting cy
 The HealthReporter maintains a counter of consecutive failures:
 
 - **Incremented on**: 
-  - Failure to get policy statuses from Tetragon
   - Failure to send report to management API
 
 - **Reset to 0 on**: 
@@ -218,7 +237,7 @@ The HealthReporter maintains a counter of consecutive failures:
 | Scenario | Behavior | Health Report Sent? |
 |----------|----------|---------------------|
 | Tetragon version unavailable | Uses `"unknown"`, continues | ✅ Yes |
-| Cannot get policy statuses | Returns error, increments counter | ❌ No |
+| Cannot get policy statuses | Logs warning, marks `"degraded:tetragon_unavailable"` | ✅ Yes |
 | API request fails | Returns error, increments counter | ❌ No |
 | Policy in non-enabled state | Marks degraded, sends report | ✅ Yes |
 
@@ -282,7 +301,7 @@ Management API can use health reports to:
 
 ### Automated Remediation
 
-On receiving `"degraded"` status:
+On receiving `"degraded:<reason>"` status:
 - Identify failing policies from `policies` array
 - Check `error` field for diagnostics
 - Trigger policy redeployment if needed
@@ -320,7 +339,7 @@ Health reports provide evidence of:
 
 ```json
 {
-  "status": "degraded",
+  "status": "degraded:policy_state_err",
   "policy_display_name": "prod-v6-b4c5d6e7f8a9",
   "policy_sha256": "b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5",
   "tetragon_version": "v1.2.3",
@@ -338,7 +357,7 @@ Health reports provide evidence of:
 
 ```json
 {
-  "status": "degraded",
+  "status": "degraded:policy_state_err",
   "policy_display_name": "prod-v7-c5d6e7f8a9b0",
   "policy_sha256": "c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
   "tetragon_version": "v1.2.3",

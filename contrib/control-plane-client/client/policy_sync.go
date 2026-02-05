@@ -230,8 +230,13 @@ func (p *PolicySyncManager) applyPolicies(ctx context.Context, resp *types.Polic
 
 	desired, err := policy.ParsePolicies(string(yamlBytes))
 	if err != nil {
+		p.cache.SetPolicyLoadError(cache.PolicyLoadError{
+			Message:   err.Error(),
+			Timestamp: time.Now(),
+		})
 		return cperrors.NewPolicyError("failed to parse policies", err)
 	}
+	p.cache.ClearPolicyLoadError()
 
 	// Track expected number of policies from the control plane
 	p.cache.SetPolicyCount(len(desired))
@@ -259,8 +264,13 @@ func (p *PolicySyncManager) applyPoliciesIncremental(ctx context.Context, resp *
 	// Parse desired policies
 	desired, err := policy.ParsePolicies(string(yamlBytes))
 	if err != nil {
+		p.cache.SetPolicyLoadError(cache.PolicyLoadError{
+			Message:   err.Error(),
+			Timestamp: time.Now(),
+		})
 		return cperrors.NewPolicyError("failed to parse policies", err)
 	}
+	p.cache.ClearPolicyLoadError()
 
 	// Track expected number of policies from the control plane
 	p.cache.SetPolicyCount(len(desired))

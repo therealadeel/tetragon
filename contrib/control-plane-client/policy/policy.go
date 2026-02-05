@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/cilium/tetragon/pkg/tracingpolicy"
 	"gopkg.in/yaml.v3"
 )
 
@@ -46,7 +47,7 @@ func ParsePolicies(yamlContent string) ([]Document, error) {
 	// Split on document separator
 	yamls := strings.Split(yamlContent, "\n---")
 
-	for _, y := range yamls {
+	for i, y := range yamls {
 		y = strings.TrimSpace(y)
 		if y == "" || y == "---" {
 			continue
@@ -60,6 +61,10 @@ func ParsePolicies(yamlContent string) ([]Document, error) {
 
 		if meta.Metadata.Name == "" {
 			continue // Skip documents without a name
+		}
+
+		if _, err := tracingpolicy.FromYAML(y); err != nil {
+			return nil, fmt.Errorf("invalid tracing policy doc %d (%s): %w", i, meta.Metadata.Name, err)
 		}
 
 		// Compute hash of the content

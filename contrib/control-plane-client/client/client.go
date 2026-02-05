@@ -100,6 +100,7 @@ func NewControlPlaneClient(cfg *config.Config) (*ControlPlaneClient, error) {
 	if cfg.Metrics.Enabled {
 		c.metricsPublisher = NewMetricsPublisher(
 			c.apiClient,
+			c.cache,
 			log,
 			MetricsPublisherConfig{
 				Endpoint:              cfg.Metrics.Endpoint,

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cilium/tetragon/contrib/control-plane-client/apiclient"
+	"github.com/cilium/tetragon/contrib/control-plane-client/cache"
 	cperrors "github.com/cilium/tetragon/contrib/control-plane-client/errors"
 	"github.com/cilium/tetragon/contrib/control-plane-client/logger"
 	"github.com/cilium/tetragon/contrib/control-plane-client/types"
@@ -17,6 +18,7 @@ import (
 // MetricsPublisher is responsible for collecting and publishing Prometheus metrics to the management API.
 type MetricsPublisher struct {
 	apiClient         apiclient.ClientInterface
+	cache             *cache.Cache
 	logger            logger.Logger
 	httpClient        *http.Client
 	cfg               MetricsPublisherConfig
@@ -32,7 +34,7 @@ type MetricsPublisherConfig struct {
 }
 
 // NewMetricsPublisher sets up a new metrics publisher with its own HTTP client for scraping endpoints.
-func NewMetricsPublisher(apiClient apiclient.ClientInterface, log logger.Logger, cfg MetricsPublisherConfig) *MetricsPublisher {
+func NewMetricsPublisher(apiClient apiclient.ClientInterface, cache *cache.Cache, log logger.Logger, cfg MetricsPublisherConfig) *MetricsPublisher {
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: cfg.InsecureSkipTLSVerify,
@@ -41,6 +43,7 @@ func NewMetricsPublisher(apiClient apiclient.ClientInterface, log logger.Logger,
 
 	return &MetricsPublisher{
 		apiClient:  apiClient,
+		cache:      cache,
 		logger:     log.WithField("component", "metrics_publisher"),
 		cfg:        cfg,
 		httpClient: &http.Client{Timeout: cfg.RequestTimeout, Transport: transport},
@@ -51,8 +54,16 @@ func NewMetricsPublisher(apiClient apiclient.ClientInterface, log logger.Logger,
 func (m *MetricsPublisher) Publish(ctx context.Context, clientID string) error {
 	payload, err := m.scrapeMetrics(ctx)
 	if err != nil {
-		m.consecutiveErrors++
-		return err
+		m.logger.Warn("failed to scrape metrics: %v", err)
+		if m.cache != nil {
+			m.cache.SetMetricsScrapeError(cache.MetricsScrapeError{
+				Message:   err.Error(),
+				Timestamp: time.Now(),
+			})
+		}
+		payload = ""
+	} else if m.cache != nil {
+		m.cache.ClearMetricsScrapeError()
 	}
 
 	report := types.MetricsReport{

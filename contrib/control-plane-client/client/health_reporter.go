@@ -22,6 +22,16 @@ type HealthReporter struct {
 	consecutiveErrors int
 }
 
+const (
+	healthStatusHealthy                     = "healthy"
+	healthStatusDegradedPolicyStateErr      = "degraded:policy_state_err"
+	healthStatusDegradedPolicyCount         = "degraded:policy_count_mismatch"
+	healthStatusDegradedPolicySyncMissing   = "degraded:policy_sync_not_found"
+	healthStatusDegradedPolicyLoadErr       = "degraded:policy_load_err"
+	healthStatusDegradedTetragonUnavailable = "degraded:tetragon_unavailable"
+	healthStatusDegradedMetricsScrapeErr    = "degraded:metrics_scrape_err"
+)
+
 // NewHealthReporter creates a new health reporter
 func NewHealthReporter(
 	apiClient apiclient.ClientInterface,
@@ -47,13 +57,13 @@ func (h *HealthReporter) Report(ctx context.Context, clientID string) error {
 		version = "unknown"
 	}
 
-	statuses, err := h.tetragonClient.GetPolicyStatuses(ctx)
-	if err != nil {
-		h.consecutiveErrors++
-		return cperrors.NewTetragonError("failed to get policy statuses", err)
+	statuses, statusErr := h.tetragonClient.GetPolicyStatuses(ctx)
+	if statusErr != nil {
+		h.logger.Warn("failed to get policy statuses: %v", statusErr)
+		statuses = []types.PolicyStatus{}
 	}
 
-	report := h.buildHealthReport(statuses, version)
+	report := h.buildHealthReport(statuses, version, statusErr)
 
 	h.logger.Info("sending health report to management API: client_id=%s, status=%s, policy_display_name=%s, policy_sha256=%s..., tetragon_version=%s, policies_count=%d",
 		clientID, report.Status, report.PolicyDisplayName, shortHash(report.PolicySha256), report.TetragonVersion, len(report.Policies))
@@ -77,36 +87,55 @@ func (h *HealthReporter) getTetragonVersion(ctx context.Context) (string, error)
 	return h.tetragonClient.GetVersion(ctx)
 }
 
-func (h *HealthReporter) buildHealthReport(statuses []types.PolicyStatus, tetragonVersion string) types.HealthReport {
+func (h *HealthReporter) buildHealthReport(statuses []types.PolicyStatus, tetragonVersion string, statusErr error) types.HealthReport {
 	report := types.HealthReport{
 		Timestamp:         time.Now(),
-		Status:            "healthy",
+		Status:            healthStatusHealthy,
 		PolicyDisplayName: h.cache.GetPolicyDisplayName(),
 		PolicySha256:      h.cache.GetPolicySha256(),
 		TetragonVersion:   tetragonVersion,
 		Policies:          statuses,
 	}
 
+	if loadErr, ok := h.cache.GetPolicyLoadError(); ok {
+		h.logger.Warn("policy load error at %s: %s; marking as %s", loadErr.Timestamp.Format(time.RFC3339), loadErr.Message, healthStatusDegradedPolicyLoadErr)
+		report.Status = healthStatusDegradedPolicyLoadErr
+	}
+
+	if statusErr != nil && report.Status == healthStatusHealthy {
+		h.logger.Warn("tetragon policy status unavailable: %v; marking as %s", statusErr, healthStatusDegradedTetragonUnavailable)
+		report.Status = healthStatusDegradedTetragonUnavailable
+	}
+
 	for i, status := range statuses {
 		h.logger.Debug("policy %d: name=%s, state=%s, error=%s", i, status.Name, status.State, status.Error)
 		if status.State != "TP_STATE_ENABLED" {
-			h.logger.Warn("policy %s state is %s (not TP_STATE_ENABLED), marking as degraded", status.Name, status.State)
-			report.Status = "degraded"
+			if report.Status == healthStatusHealthy {
+				h.logger.Warn("policy %s state is %s (not TP_STATE_ENABLED), marking as %s", status.Name, status.State, healthStatusDegradedPolicyStateErr)
+				report.Status = healthStatusDegradedPolicyStateErr
+			} else {
+				h.logger.Warn("policy %s state is %s (not TP_STATE_ENABLED)", status.Name, status.State)
+			}
 		}
 	}
 
 	expected := h.cache.GetPolicyCount()
 	actual := len(statuses)
-	if expected > 0 && actual != expected && report.Status == "healthy" {
-		h.logger.Warn("policy count mismatch: expected=%d, actual=%d; marking as degraded", expected, actual)
-		report.Status = "degraded"
+	if expected > 0 && actual != expected && report.Status == healthStatusHealthy {
+		h.logger.Warn("policy count mismatch: expected=%d, actual=%d; marking as %s", expected, actual, healthStatusDegradedPolicyCount)
+		report.Status = healthStatusDegradedPolicyCount
 	}
 
 	if syncErr, ok := h.cache.GetPolicySyncError(); ok && syncErr.StatusCode == http.StatusNotFound {
-		if report.Status == "healthy" {
-			h.logger.Warn("policy sync returned HTTP %d (%s); marking as degraded", syncErr.StatusCode, syncErr.Message)
+		if report.Status == healthStatusHealthy {
+			h.logger.Warn("policy sync returned HTTP %d (%s); marking as %s", syncErr.StatusCode, syncErr.Message, healthStatusDegradedPolicySyncMissing)
+			report.Status = healthStatusDegradedPolicySyncMissing
 		}
-		report.Status = "degraded"
+	}
+
+	if metricsErr, ok := h.cache.GetMetricsScrapeError(); ok && report.Status == healthStatusHealthy {
+		h.logger.Warn("metrics scrape error at %s: %s; marking as %s", metricsErr.Timestamp.Format(time.RFC3339), metricsErr.Message, healthStatusDegradedMetricsScrapeErr)
+		report.Status = healthStatusDegradedMetricsScrapeErr
 	}
 
 	return report
