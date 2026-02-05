@@ -20,6 +20,8 @@ type HealthReporter struct {
 	cache             *cache.Cache
 	logger            logger.Logger
 	consecutiveErrors int
+	tetragonTimeout   time.Duration
+	apiTimeout        time.Duration
 }
 
 const (
@@ -38,12 +40,15 @@ func NewHealthReporter(
 	tetragonClient tetragon.ClientInterface,
 	cache *cache.Cache,
 	logger logger.Logger,
+	config HealthReporterConfig,
 ) *HealthReporter {
 	return &HealthReporter{
-		apiClient:      apiClient,
-		tetragonClient: tetragonClient,
-		cache:          cache,
-		logger:         logger.WithField("component", "health_reporter"),
+		apiClient:       apiClient,
+		tetragonClient:  tetragonClient,
+		cache:           cache,
+		logger:          logger.WithField("component", "health_reporter"),
+		tetragonTimeout: config.TetragonTimeout,
+		apiTimeout:      config.APITimeout,
 	}
 }
 
@@ -51,13 +56,17 @@ func NewHealthReporter(
 func (h *HealthReporter) Report(ctx context.Context, clientID string) error {
 	h.logger.Debug("reporting health...")
 
-	version, err := h.getTetragonVersion(ctx)
+	versionCtx, cancel := h.withTimeout(ctx, h.tetragonTimeout)
+	version, err := h.getTetragonVersion(versionCtx)
+	cancel()
 	if err != nil {
 		h.logger.Warn("failed to get Tetragon version: %v", err)
 		version = "unknown"
 	}
 
-	statuses, statusErr := h.tetragonClient.GetPolicyStatuses(ctx)
+	statusesCtx, cancel := h.withTimeout(ctx, h.tetragonTimeout)
+	statuses, statusErr := h.tetragonClient.GetPolicyStatuses(statusesCtx)
+	cancel()
 	if statusErr != nil {
 		h.logger.Warn("failed to get policy statuses: %v", statusErr)
 		statuses = []types.PolicyStatus{}
@@ -68,7 +77,9 @@ func (h *HealthReporter) Report(ctx context.Context, clientID string) error {
 	h.logger.Info("sending health report to management API: client_id=%s, status=%s, policy_display_name=%s, policy_sha256=%s..., tetragon_version=%s, policies_count=%d",
 		clientID, report.Status, report.PolicyDisplayName, shortHash(report.PolicySha256), report.TetragonVersion, len(report.Policies))
 
-	if err := h.apiClient.ReportHealth(ctx, clientID, report); err != nil {
+	apiCtx, cancel := h.withTimeout(ctx, h.apiTimeout)
+	defer cancel()
+	if err := h.apiClient.ReportHealth(apiCtx, clientID, report); err != nil {
 		h.consecutiveErrors++
 		return cperrors.NewAPIError("failed to report health", 0, err)
 	}
@@ -139,4 +150,22 @@ func (h *HealthReporter) buildHealthReport(statuses []types.PolicyStatus, tetrag
 	}
 
 	return report
+}
+
+// HealthReporterConfig holds timeouts for external calls.
+type HealthReporterConfig struct {
+	TetragonTimeout time.Duration
+	APITimeout      time.Duration
+}
+
+func (h *HealthReporter) withTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if time.Until(deadline) <= timeout {
+			return ctx, func() {}
+		}
+	}
+	return context.WithTimeout(ctx, timeout)
 }

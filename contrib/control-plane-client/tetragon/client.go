@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -19,6 +20,7 @@ import (
 type Client struct {
 	address string
 	timeout time.Duration
+	mu      sync.Mutex
 	conn    *grpc.ClientConn
 	client  tetragonapi.FineGuidanceSensorsClient
 }
@@ -31,30 +33,29 @@ func NewClient(cfg config.TetragonConfig) (*Client, error) {
 }
 
 func (c *Client) Connect(ctx context.Context) error {
-	conn, err := grpc.DialContext(
-		ctx,
-		c.address,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to connect to Tetragon at %s: %w", c.address, err)
-	}
-
-	c.conn = conn
-	c.client = tetragonapi.NewFineGuidanceSensorsClient(conn)
-	return nil
+	return c.ensureConnected(ctx)
 }
 
 func (c *Client) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.conn != nil {
-		return c.conn.Close()
+		err := c.conn.Close()
+		c.conn = nil
+		c.client = nil
+		return err
 	}
 	return nil
 }
 
 func (c *Client) GetVersion(ctx context.Context) (string, error) {
-	resp, err := c.client.GetVersion(ctx, &tetragonapi.GetVersionRequest{})
+	if err := c.ensureConnected(ctx); err != nil {
+		return "", err
+	}
+	callCtx, cancel := c.withTimeout(ctx)
+	defer cancel()
+
+	resp, err := c.client.GetVersion(callCtx, &tetragonapi.GetVersionRequest{})
 	if err != nil {
 		return "", fmt.Errorf("failed to get version: %w", err)
 	}
@@ -62,7 +63,13 @@ func (c *Client) GetVersion(ctx context.Context) (string, error) {
 }
 
 func (c *Client) ListPolicies(ctx context.Context) ([]*tetragonapi.TracingPolicyStatus, error) {
-	resp, err := c.client.ListTracingPolicies(ctx, &tetragonapi.ListTracingPoliciesRequest{})
+	if err := c.ensureConnected(ctx); err != nil {
+		return nil, err
+	}
+	callCtx, cancel := c.withTimeout(ctx)
+	defer cancel()
+
+	resp, err := c.client.ListTracingPolicies(callCtx, &tetragonapi.ListTracingPoliciesRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tracing policies: %w", err)
 	}
@@ -70,7 +77,13 @@ func (c *Client) ListPolicies(ctx context.Context) ([]*tetragonapi.TracingPolicy
 }
 
 func (c *Client) AddPolicy(ctx context.Context, yamlContent string) error {
-	_, err := c.client.AddTracingPolicy(ctx, &tetragonapi.AddTracingPolicyRequest{
+	if err := c.ensureConnected(ctx); err != nil {
+		return err
+	}
+	callCtx, cancel := c.withTimeout(ctx)
+	defer cancel()
+
+	_, err := c.client.AddTracingPolicy(callCtx, &tetragonapi.AddTracingPolicyRequest{
 		Yaml: yamlContent,
 	})
 	if err != nil {
@@ -80,7 +93,13 @@ func (c *Client) AddPolicy(ctx context.Context, yamlContent string) error {
 }
 
 func (c *Client) DeletePolicy(ctx context.Context, name, namespace string) error {
-	_, err := c.client.DeleteTracingPolicy(ctx, &tetragonapi.DeleteTracingPolicyRequest{
+	if err := c.ensureConnected(ctx); err != nil {
+		return err
+	}
+	callCtx, cancel := c.withTimeout(ctx)
+	defer cancel()
+
+	_, err := c.client.DeleteTracingPolicy(callCtx, &tetragonapi.DeleteTracingPolicyRequest{
 		Name:      name,
 		Namespace: namespace,
 	})
@@ -161,4 +180,42 @@ func (c *Client) GetPolicyStatuses(ctx context.Context) ([]types.PolicyStatus, e
 	}
 
 	return statuses, nil
+}
+
+func (c *Client) ensureConnected(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.client != nil {
+		return nil
+	}
+
+	dialCtx, cancel := c.withTimeout(ctx)
+	defer cancel()
+
+	conn, err := grpc.DialContext(
+		dialCtx,
+		c.address,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithBlock(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to connect to Tetragon at %s: %w", c.address, err)
+	}
+
+	c.conn = conn
+	c.client = tetragonapi.NewFineGuidanceSensorsClient(conn)
+	return nil
+}
+
+func (c *Client) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if c.timeout <= 0 {
+		return ctx, func() {}
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if time.Until(deadline) <= c.timeout {
+			return ctx, func() {}
+		}
+	}
+	return context.WithTimeout(ctx, c.timeout)
 }

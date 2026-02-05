@@ -95,6 +95,10 @@ func NewControlPlaneClient(cfg *config.Config) (*ControlPlaneClient, error) {
 		c.tetragonClient,
 		c.cache,
 		log,
+		HealthReporterConfig{
+			TetragonTimeout: cfg.Tetragon.Timeout,
+			APITimeout:      cfg.ManagementAPI.Timeout,
+		},
 	)
 
 	if cfg.Metrics.Enabled {
@@ -117,10 +121,6 @@ func NewControlPlaneClient(cfg *config.Config) (*ControlPlaneClient, error) {
 // Start starts the control plane client
 func (c *ControlPlaneClient) Start(ctx context.Context) error {
 	c.logger.Info("starting control plane client...")
-
-	if err := c.tetragonClient.Connect(ctx); err != nil {
-		return cperrors.NewTetragonError("failed to connect to Tetragon", err)
-	}
 	defer c.tetragonClient.Close()
 
 	// Register with management API
@@ -236,10 +236,7 @@ func (c *ControlPlaneClient) healthReportingLoop(ctx context.Context) {
 			c.logger.Info("health reporting loop stopping due to stop signal")
 			return
 		case <-ticker.C:
-			// Create a timeout context for this health report operation
-			healthCtx, cancel := context.WithTimeout(ctx, c.cfg.ManagementAPI.Timeout)
-
-			if err := c.healthReporter.Report(healthCtx, c.clientID); err != nil {
+			if err := c.healthReporter.Report(ctx, c.clientID); err != nil {
 				c.logger.Error("health reporting error: %v", err)
 
 				// Apply backpressure based on consecutive errors
@@ -256,8 +253,6 @@ func (c *ControlPlaneClient) healthReportingLoop(ctx context.Context) {
 				// Reset to normal interval with jitter on success
 				ticker.Reset(addJitter(c.cfg.HealthReporting.Interval))
 			}
-
-			cancel()
 		}
 	}
 }
